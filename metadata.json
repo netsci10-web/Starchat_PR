@@ -1,0 +1,6 @@
+{
+  "name": "FChart3 Vector Star Atlas Studio",
+  "description": "D3.js vector astronomical star chart and fchart3-atlas multi-page PDF sky atlas generator with constellation boundaries, Milky Way isophote contours, and nebula outlines.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
