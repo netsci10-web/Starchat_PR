@@ -3,10 +3,12 @@ name: Deploy Vite App to GitHub Pages
 on:
   push:
     branches: ['main', 'master']
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -14,21 +16,81 @@ concurrency:
   group: 'pages'
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Upload prebuilt docs artifact to GitHub Pages
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies and build production bundle
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.dependencies = {
+              "d3": "^7.9.0",
+              "jspdf": "^2.5.2",
+              "lucide-react": "latest",
+              "react": "^19.0.0",
+              "react-dom": "^19.0.0"
+            };
+            pkg.devDependencies = {
+              "@tailwindcss/vite": "^4.0.0",
+              "@types/d3": "^7.4.3",
+              "@types/node": "^22.0.0",
+              "@types/react": "^19.0.0",
+              "@types/react-dom": "^19.0.0",
+              "@vitejs/plugin-react": "^4.3.4",
+              "tailwindcss": "^4.0.0",
+              "typescript": "~5.7.2",
+              "vite": "^6.0.0"
+            };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
+          '
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm run build
+
+      - name: Sync built bundle to docs folder and gh-pages branch
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout package.json
+          rm -f package-lock.json
+          if [ -d "docs" ]; then
+            git add -f docs .nojekyll
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: update prebuilt docs bundle for GitHub Pages [skip ci]"
+              git push origin HEAD:${GITHUB_REF_NAME} || true
+            fi
+          fi
+          npx --yes gh-pages -d dist -t true || true
+
+      - name: Configure GitHub Pages
+        id: configure_pages
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.configure_pages.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './docs'
+          path: './dist'
 
       - name: Deploy to GitHub Pages
         id: deployment
+        if: steps.configure_pages.outcome == 'success'
+        continue-on-error: true
         uses: actions/deploy-pages@v4

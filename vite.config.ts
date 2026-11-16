@@ -8,11 +8,12 @@ export default defineConfig(() => {
   return {
     base: './',
     build: {
+      cssCodeSplit: false,
       rollupOptions: {
         output: {
           entryFileNames: 'assets/app.js',
           chunkFileNames: 'assets/[name].js',
-          assetFileNames: 'assets/[name].[ext]',
+          assetFileNames: 'assets/style.[ext]',
         },
       },
     },
