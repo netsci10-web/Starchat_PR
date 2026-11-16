@@ -8,7 +8,6 @@ import { AtlasPartitionPanel } from './components/AtlasPartitionPanel';
 import { CatalogAndSpecsView } from './components/CatalogAndSpecsView';
 import { FChart3Sidebar } from './components/FChart3Sidebar';
 import { FChart3Viewport } from './components/FChart3Viewport';
-import { DSO_CATALOG } from './data/astronomyData';
 import {
   AtlasGeneratorOptions,
   AtlasSheet,
@@ -54,19 +53,20 @@ export default function App() {
     limitStarMag: 8.6,
     limitDsoMag: 11.5,
     starScaleFactor: 1.05,
-    showMilkyWayContours: true,
+    showMilkyWayContours: false,
     milkyWayStyle: 'shaded_vector',
     showConstellationLines: true,
-    showConstellationBoundaries: true,
-    showNebulaOutlines: true,
+    showConstellationBoundaries: false,
+    showNebulaOutlines: false,
     showMessierObjects: true,
     showCaldwellObjects: true,
     showEquatorialGrid: true,
-    showEclipticAndGalactic: true,
+    showEclipticAndGalactic: false,
     showStarLabels: 'bayer_and_named',
     showDsoLabels: true,
     showMagnitudeScale: true,
     showScaleBar: true,
+    showCursorCoords: true,
     reticleMode: 'none',
     customEyepieceFovDeg: 2.0,
   });
@@ -100,10 +100,7 @@ export default function App() {
   const [selectedObject, setSelectedObject] = useState<{
     type: 'star' | 'dso';
     data: StarRecord | DSORecord;
-  } | null>({
-    type: 'dso',
-    data: DSO_CATALOG[0], // M42 Orion Nebula initially highlighted
-  });
+  } | null>(null);
 
   const [pdfProgress, setPdfProgress] = useState<{
     current: number;
@@ -166,10 +163,10 @@ export default function App() {
   const isDarkUi = config.colorScheme !== 'paper';
 
   return (
-    <div className={isDarkUi ? 'dark' : ''}>
-      <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+    <div className={`${isDarkUi ? 'dark' : ''} h-screen w-screen overflow-hidden`}>
+      <div className="h-screen w-screen overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
         {/* Strict 3-Zone Top Bar Contract */}
-        <header className="flex items-center justify-between gap-8 px-6 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        <header className="flex items-center justify-between gap-6 px-5 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
           {/* Zone 1: Single text element wordmark */}
           <a
             href="#chart"
@@ -182,7 +179,7 @@ export default function App() {
             FCHART3 ATLAS STUDIO
           </a>
 
-          {/* Zone 2: 5 concise single-line text navigation links (with '설정' right next to 'CLI 및 도법 명세') */}
+          {/* Zone 2: 5 concise single-line text navigation links (with '검색창' right next to '대화형 벡터 성도') */}
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-400">
             <a
               href="#chart"
@@ -199,6 +196,20 @@ export default function App() {
               대화형 벡터 성도
             </a>
             <a
+              href="#catalog"
+              onClick={(e) => {
+                e.preventDefault();
+                setActiveTab('catalog');
+              }}
+              className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
+                activeTab === 'catalog'
+                  ? 'text-slate-900 dark:text-white border-b-2 border-cyan-500'
+                  : ''
+              }`}
+            >
+              검색창
+            </a>
+            <a
               href="#atlas"
               onClick={(e) => {
                 e.preventDefault();
@@ -211,20 +222,6 @@ export default function App() {
               }`}
             >
               다중 성도집 분할 ({atlasSheets.length}매)
-            </a>
-            <a
-              href="#catalog"
-              onClick={(e) => {
-                e.preventDefault();
-                setActiveTab('catalog');
-              }}
-              className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
-                activeTab === 'catalog'
-                  ? 'text-slate-900 dark:text-white border-b-2 border-cyan-500'
-                  : ''
-              }`}
-            >
-              메시에·콜드웰 카탈로그
             </a>
             <a
               href="#specs"
@@ -262,7 +259,7 @@ export default function App() {
               type="button"
               disabled={Boolean(pdfProgress)}
               onClick={handleExportMultiPagePdf}
-              className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="px-3.5 py-1.5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               {pdfProgress
                 ? `PDF 생성 중 (${pdfProgress.current}/${pdfProgress.total})`
@@ -272,7 +269,7 @@ export default function App() {
         </header>
 
         {/* Sub-Toolbar for Mobile Navigation & Live Telemetry Ribbon */}
-        <div className="px-6 py-2 bg-slate-100 dark:bg-slate-900/70 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+        <div className="px-5 py-1.5 bg-slate-100 dark:bg-slate-900/70 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs font-mono shrink-0">
           <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
               ● {config.coordinateSystem === 'horizontal' ? 'HORIZONTAL (ALT-AZ)' : 'EQUATORIAL (J2000)'}
@@ -295,8 +292,8 @@ export default function App() {
               {(
                 [
                   { id: 'chart', label: '성도' },
+                  { id: 'catalog', label: '검색창' },
                   { id: 'atlas', label: '성도집 분할' },
-                  { id: 'catalog', label: '메시에·콜드웰' },
                   { id: 'specs', label: 'CLI 명세' },
                   { id: 'settings', label: '설정' },
                 ] as const
@@ -346,16 +343,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* Main Workspace Body */}
+        {/* Main Workspace Body (Full Window Height, Zero Window Scroll) */}
         {activeTab === 'chart' ? (
-          <main className="flex-1 flex flex-col lg:flex-row min-h-[calc(100vh-104px)]">
-            {/* Left Parameter Console */}
+          <main className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+            {/* Left Parameter & Search Console */}
             <FChart3Sidebar
               config={config}
               onChangeConfig={setConfig}
               onOpenAtlasModal={() => setActiveTab('atlas')}
               onOpenSettingsTab={() => setActiveTab('settings')}
               onSelectDso={(dso) => setSelectedObject({ type: 'dso', data: dso })}
+              onSelectStar={(star) => setSelectedObject({ type: 'star', data: star })}
               sheetsCount={atlasSheets.length}
             />
 
@@ -371,58 +369,69 @@ export default function App() {
             />
           </main>
         ) : (
-          <main className="flex-1 max-w-[1440px] w-full mx-auto px-6 py-6">
-            {activeTab === 'atlas' && (
-              <AtlasPartitionPanel
-                options={atlasOptions}
-                onChangeOptions={setAtlasOptions}
-                sheets={atlasSheets}
-                activeSheet={activeSheet}
-                onSelectSheet={handleSelectSheet}
-                onGeneratePdf={handleExportMultiPagePdf}
-                pdfProgress={pdfProgress}
-              />
-            )}
+          <main className="flex-1 min-h-0 w-full overflow-y-auto">
+            <div className="max-w-[1440px] w-full mx-auto px-6 py-5">
+              {activeTab === 'atlas' && (
+                <AtlasPartitionPanel
+                  options={atlasOptions}
+                  onChangeOptions={setAtlasOptions}
+                  sheets={atlasSheets}
+                  activeSheet={activeSheet}
+                  onSelectSheet={handleSelectSheet}
+                  onGeneratePdf={handleExportMultiPagePdf}
+                  pdfProgress={pdfProgress}
+                />
+              )}
 
-            {(activeTab === 'catalog' ||
-              activeTab === 'specs' ||
-              activeTab === 'settings') && (
-              <CatalogAndSpecsView
-                mode={activeTab}
-                config={config}
-                onChangeConfig={setConfig}
-                atlasOptions={atlasOptions}
-                onJumpToTarget={(raHours, decDeg, fovDeg, dso) => {
-                  if (dso) {
-                    setSelectedObject({ type: 'dso', data: dso });
-                  }
-                  setConfig((prev) => {
-                    const lstDeg = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
-                    const [az, alt] = equatorialToHorizontal(
-                      raHours * 15,
-                      decDeg,
-                      prev.observerLatDeg,
-                      lstDeg
-                    );
-                    return {
-                      ...prev,
-                      showMessierObjects: dso?.messierId ? true : prev.showMessierObjects,
-                      showCaldwellObjects: dso?.caldwellId ? true : prev.showCaldwellObjects,
-                      showConstellationLines: true,
-                      limitDsoMag: dso
-                        ? Math.max(prev.limitDsoMag, Number((dso.mag + 0.5).toFixed(1)))
-                        : prev.limitDsoMag,
-                      centerRaHours: raHours,
-                      centerDecDeg: decDeg,
-                      centerAzDeg: Number(az.toFixed(1)),
-                      centerAltDeg: Number(alt.toFixed(1)),
-                      fovDeg,
-                    };
-                  });
-                  setActiveTab('chart');
-                }}
-              />
-            )}
+              {(activeTab === 'catalog' ||
+                activeTab === 'specs' ||
+                activeTab === 'settings') && (
+                <CatalogAndSpecsView
+                  mode={activeTab}
+                  config={config}
+                  onChangeConfig={setConfig}
+                  atlasOptions={atlasOptions}
+                  onJumpToTarget={(raHours, decDeg, fovDeg, dso, star) => {
+                    if (dso) {
+                      setSelectedObject({ type: 'dso', data: dso });
+                    } else if (star) {
+                      setSelectedObject({ type: 'star', data: star });
+                    }
+                    setConfig((prev) => {
+                      const lstDeg = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
+                      const [az, alt] = equatorialToHorizontal(
+                        raHours * 15,
+                        decDeg,
+                        prev.observerLatDeg,
+                        lstDeg
+                      );
+                      return {
+                        ...prev,
+                        showMessierObjects: dso?.messierId ? true : prev.showMessierObjects,
+                        showCaldwellObjects: dso?.caldwellId ? true : prev.showCaldwellObjects,
+                        showNebulaOutlines:
+                          dso && !dso.messierId && !dso.caldwellId
+                            ? true
+                            : prev.showNebulaOutlines,
+                        showConstellationLines: true,
+                        limitDsoMag: dso
+                          ? Math.max(prev.limitDsoMag, Number((dso.mag + 0.5).toFixed(1)))
+                          : prev.limitDsoMag,
+                        limitStarMag: star
+                          ? Math.max(prev.limitStarMag, Number((star.mag + 0.5).toFixed(1)))
+                          : prev.limitStarMag,
+                        centerRaHours: raHours,
+                        centerDecDeg: decDeg,
+                        centerAzDeg: Number(az.toFixed(1)),
+                        centerAltDeg: Number(alt.toFixed(1)),
+                        fovDeg,
+                      };
+                    });
+                    setActiveTab('chart');
+                  }}
+                />
+              )}
+            </div>
           </main>
         )}
       </div>

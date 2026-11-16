@@ -5,7 +5,11 @@ import {
   Compass,
   Crosshair,
   Download,
+  FastForward,
   FileDown,
+  Pause,
+  Play,
+  Rewind,
   RotateCcw,
   ZoomIn,
   ZoomOut,
@@ -92,13 +96,16 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     altDeg: number;
   } | null>(null);
 
-  // Measure pure star chart canvas container
+  const isChartSelectedRef = useRef<boolean>(true);
+  const isMouseOverChartRef = useRef<boolean>(false);
+
+  // Measure pure star chart canvas container dynamically to fill window
   useEffect(() => {
     const el = chartContainerRef.current;
     if (!el) return;
     const updateSize = () => {
       const rect = el.getBoundingClientRect();
-      if (rect.width > 100 && rect.height > 100) {
+      if (rect.width > 60 && rect.height > 60) {
         setDimensions({
           width: Math.floor(rect.width),
           height: Math.floor(rect.height),
@@ -625,62 +632,142 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
   };
 
   // Update Observation Date & Time and sync celestial coordinates across Equatorial / Horizontal modes
-  const applyObservationDateTime = (nextDateTime: string) => {
-    if (!nextDateTime) return;
-    onChangeConfig((prev) => {
-      const prevLst = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
-      const nextLst = computeLstDeg(nextDateTime, prev.observerLonDeg);
-      if (prev.coordinateSystem === 'horizontal') {
-        const [raDeg, decDeg] = horizontalToEquatorial(
-          prev.centerAzDeg,
-          prev.centerAltDeg,
-          prev.observerLatDeg,
-          nextLst
-        );
-        return {
-          ...prev,
-          observationDateTime: nextDateTime,
-          centerRaHours: Number((raDeg / 15).toFixed(3)),
-          centerDecDeg: Number(Math.max(-89.5, Math.min(89.5, decDeg)).toFixed(2)),
-        };
-      } else {
-        const dLstHours = (nextLst - prevLst) / 15;
-        const nextRaHours = ((prev.centerRaHours + dLstHours) % 24 + 24) % 24;
-        const [az, alt] = equatorialToHorizontal(
-          nextRaHours * 15,
-          prev.centerDecDeg,
-          prev.observerLatDeg,
-          nextLst
-        );
-        return {
-          ...prev,
-          observationDateTime: nextDateTime,
-          centerRaHours: Number(nextRaHours.toFixed(3)),
-          centerAzDeg: Number(az.toFixed(1)),
-          centerAltDeg: Number(alt.toFixed(1)),
-        };
+  const applyObservationDateTime = useCallback(
+    (nextDateTime: string) => {
+      if (!nextDateTime) return;
+      onChangeConfig((prev) => {
+        const prevLst = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
+        const nextLst = computeLstDeg(nextDateTime, prev.observerLonDeg);
+        if (prev.coordinateSystem === 'horizontal') {
+          const [raDeg, decDeg] = horizontalToEquatorial(
+            prev.centerAzDeg,
+            prev.centerAltDeg,
+            prev.observerLatDeg,
+            nextLst
+          );
+          return {
+            ...prev,
+            observationDateTime: nextDateTime,
+            centerRaHours: Number((raDeg / 15).toFixed(6)),
+            centerDecDeg: Number(Math.max(-89.5, Math.min(89.5, decDeg)).toFixed(4)),
+          };
+        } else {
+          const dLstHours = (nextLst - prevLst) / 15;
+          const nextRaHours = ((prev.centerRaHours + dLstHours) % 24 + 24) % 24;
+          const [az, alt] = equatorialToHorizontal(
+            nextRaHours * 15,
+            prev.centerDecDeg,
+            prev.observerLatDeg,
+            nextLst
+          );
+          return {
+            ...prev,
+            observationDateTime: nextDateTime,
+            centerRaHours: Number(nextRaHours.toFixed(6)),
+            centerAzDeg: Number(az.toFixed(2)),
+            centerAltDeg: Number(alt.toFixed(2)),
+          };
+        }
+      });
+    },
+    [onChangeConfig]
+  );
+
+  // Real-time / Accelerated Time Simulation State (0 = paused, 1 = 1x normal speed, >1 = fast-forward, <0 = rewind)
+  const [simSpeed, setSimSpeed] = useState<number>(0);
+  const simTimeMsRef = useRef<number>(
+    (() => {
+      const parsed = config.observationDateTime ? new Date(config.observationDateTime) : new Date();
+      return Number.isNaN(parsed.getTime()) ? Date.now() : parsed.getTime();
+    })()
+  );
+
+  // Keep simTimeMsRef synced when observationDateTime is changed externally
+  useEffect(() => {
+    const parsed = config.observationDateTime ? new Date(config.observationDateTime) : new Date();
+    if (!Number.isNaN(parsed.getTime())) {
+      if (Math.abs(parsed.getTime() - simTimeMsRef.current) > 1500) {
+        simTimeMsRef.current = parsed.getTime();
       }
+    }
+  }, [config.observationDateTime]);
+
+  const formatLocalIsoDateTime = (epochMs: number, includeSeconds = true): string => {
+    const dt = new Date(epochMs);
+    const tzOffsetMs = dt.getTimezoneOffset() * 60000;
+    const localIso = new Date(dt.getTime() - tzOffsetMs).toISOString();
+    return includeSeconds ? localIso.slice(0, 19) : localIso.slice(0, 16);
+  };
+
+  useEffect(() => {
+    if (simSpeed === 0) return;
+    let lastPerf = performance.now();
+    const timer = window.setInterval(() => {
+      const nowPerf = performance.now();
+      const dtSec = (nowPerf - lastPerf) / 1000;
+      lastPerf = nowPerf;
+      simTimeMsRef.current += dtSec * 1000 * simSpeed;
+      applyObservationDateTime(formatLocalIsoDateTime(simTimeMsRef.current, true));
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [simSpeed, applyObservationDateTime]);
+
+  const FAST_SPEED_STEPS = [1, 10, 60, 300, 900, 3600, 14400, 86400];
+
+  const handleTogglePlayPause = () => {
+    setSimSpeed((prev) => (prev === 0 ? 1 : 0));
+  };
+
+  const handleFastForward = () => {
+    setSimSpeed((prev) => {
+      if (prev <= 0) return 10;
+      const idx = FAST_SPEED_STEPS.findIndex((s) => s > prev);
+      return idx !== -1 ? FAST_SPEED_STEPS[idx] : FAST_SPEED_STEPS[FAST_SPEED_STEPS.length - 1];
     });
   };
 
+  const handleRewind = () => {
+    setSimSpeed((prev) => {
+      if (prev >= 0) return -10;
+      const absPrev = Math.abs(prev);
+      const idx = FAST_SPEED_STEPS.findIndex((s) => s > absPrev);
+      return idx !== -1 ? -FAST_SPEED_STEPS[idx] : -FAST_SPEED_STEPS[FAST_SPEED_STEPS.length - 1];
+    });
+  };
+
+  const formatSimSpeedLabel = (speed: number): string => {
+    if (speed === 0) return '정지';
+    if (speed === 1) return '1× (실시간)';
+    const sign = speed > 0 ? '+' : '-';
+    const abs = Math.abs(speed);
+    if (abs === 10) return `${sign}10× (10초/초)`;
+    if (abs === 60) return `${sign}60× (1분/초)`;
+    if (abs === 300) return `${sign}300× (5분/초)`;
+    if (abs === 900) return `${sign}900× (15분/초)`;
+    if (abs === 3600) return `${sign}3600× (1시간/초)`;
+    if (abs === 14400) return `${sign}14400× (4시간/초)`;
+    if (abs === 86400) return `${sign}86400× (1일/초)`;
+    return `${sign}${abs}×`;
+  };
+
   const handleSetNowDateTime = () => {
-    const now = new Date();
-    const tzOffsetMs = now.getTimezoneOffset() * 60000;
-    const localIso = new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 16);
-    applyObservationDateTime(localIso);
+    const nowMs = Date.now();
+    simTimeMsRef.current = nowMs;
+    applyObservationDateTime(formatLocalIsoDateTime(nowMs, true));
   };
 
   const handleStepHours = (deltaHours: number) => {
     const base = config.observationDateTime ? new Date(config.observationDateTime) : new Date();
-    const valid = Number.isNaN(base.getTime()) ? new Date() : base;
-    const shifted = new Date(valid.getTime() + deltaHours * 3600000);
-    const tzOffsetMs = shifted.getTimezoneOffset() * 60000;
-    const localIso = new Date(shifted.getTime() - tzOffsetMs).toISOString().slice(0, 16);
-    applyObservationDateTime(localIso);
+    const validMs = Number.isNaN(base.getTime()) ? Date.now() : base.getTime();
+    const shiftedMs = validMs + deltaHours * 3600000;
+    simTimeMsRef.current = shiftedMs;
+    applyObservationDateTime(formatLocalIsoDateTime(shiftedMs, true));
   };
 
   // Pointer handlers for interactive celestial pan & coordinate probing
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    isChartSelectedRef.current = true;
+    chartContainerRef.current?.focus({ preventScroll: true });
     if (e.button !== 0) return;
     setIsDragging(true);
     dragStartRef.current = {
@@ -797,15 +884,63 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     dragStartRef.current = null;
   };
 
-  // Wheel handler for smooth FOV zoom (min FOV = 1.0°)
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 1.12 : 0.89;
-    onChangeConfig((prev) => ({
-      ...prev,
-      fovDeg: Number(Math.max(1.0, Math.min(145, prev.fovDeg * factor)).toFixed(1)),
-    }));
-  };
+  // Smooth FOV zoom helper (min FOV = 1.0°, max FOV = 135.0°)
+  const applyWheelZoom = useCallback(
+    (deltaY: number) => {
+      if (deltaY === 0) return;
+      onChangeConfig((prev) => {
+        const step = Math.max(0.2, prev.fovDeg * 0.11);
+        const nextFov =
+          deltaY > 0
+            ? Math.min(135.0, prev.fovDeg + step)
+            : Math.max(1.0, prev.fovDeg - step);
+        return {
+          ...prev,
+          fovDeg: Number(nextFov.toFixed(1)),
+        };
+      });
+    },
+    [onChangeConfig]
+  );
+
+  // Track chart selection vs sidebar clicks and handle mouse wheel zoom when hovered or selected
+  useEffect(() => {
+    const handleGlobalPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      const chartEl = chartContainerRef.current;
+      if (!target || !chartEl) return;
+      if (chartEl.contains(target)) {
+        isChartSelectedRef.current = true;
+      } else if ((target as HTMLElement).closest?.('aside, input, select, textarea')) {
+        isChartSelectedRef.current = false;
+      }
+    };
+
+    const handleGlobalWheel = (e: WheelEvent) => {
+      const chartEl = chartContainerRef.current;
+      if (!chartEl) return;
+      const target = e.target as HTMLElement | null;
+      const isInsideChart = Boolean(target && chartEl.contains(target));
+      const isInsideScrollableSidebar = Boolean(target?.closest?.('aside'));
+
+      if (
+        isInsideChart ||
+        isMouseOverChartRef.current ||
+        (isChartSelectedRef.current && !isInsideScrollableSidebar)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        applyWheelZoom(e.deltaY);
+      }
+    };
+
+    window.addEventListener('pointerdown', handleGlobalPointerDown, { passive: true });
+    window.addEventListener('wheel', handleGlobalWheel, { passive: false });
+    return () => {
+      window.removeEventListener('pointerdown', handleGlobalPointerDown);
+      window.removeEventListener('wheel', handleGlobalWheel);
+    };
+  }, [applyWheelZoom]);
 
   // Download standalone vector SVG file (pure star chart without UI boxes)
   const handleDownloadSvg = () => {
@@ -846,11 +981,11 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
   const barPx = Math.min(150, Math.max(36, barDeg * pxPerDeg));
 
   return (
-    <div className="flex-1 flex flex-col h-full min-h-[620px] select-none overflow-hidden bg-white dark:bg-slate-950 border-x border-slate-200 dark:border-slate-800">
+    <div className="flex-1 min-w-0 min-h-0 h-full flex flex-col select-none overflow-hidden bg-white dark:bg-slate-950 border-x border-slate-200 dark:border-slate-800">
       {/* =====================================================================
-          1. TOP INSTRUMENT BAR (성도 바깥 상단: 좌표계 전환 · 좌표 제원 · 커서 프로브 · 줌 및 벡터 출력 버튼)
+          1. TOP INSTRUMENT BAR (성도 바깥 상단: 좌표계 전환 · 좌표 제원 · 줌 및 벡터 출력 버튼)
          ===================================================================== */}
-      <div className="px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
+      <div className="px-4 py-2 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2.5 shrink-0">
         {/* Left: Coordinate System Badge, J2000/Alt-Az Coordinates, FOV, Star Count & Cursor Probe */}
         <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5">
           {/* Quick Coordinate System Switcher */}
@@ -927,38 +1062,6 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                 ≤ {config.limitStarMag.toFixed(1)}
               </span>
             </div>
-          </div>
-
-          {/* Cursor Probe Readout (Outside the Star Chart) */}
-          <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 rounded">
-            <Crosshair className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400 shrink-0" />
-            {cursorCoords ? (
-              isHorizontal ? (
-                <>
-                  <span>커서 방위각 {formatAzDeg(cursorCoords.azDeg)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>고도 {formatAltDeg(cursorCoords.altDeg)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    ({formatRaHours(cursorCoords.raHours, true)}{' '}
-                    {formatDecDeg(cursorCoords.decDeg, true)})
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span>커서: {formatRaHours(cursorCoords.raHours)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{formatDecDeg(cursorCoords.decDeg)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    은하위도 b={cursorCoords.galLat >= 0 ? '+' : ''}
-                    {cursorCoords.galLat.toFixed(1)}°
-                  </span>
-                </>
-              )
-            ) : (
-              <span>성도 위에 마우스를 올리면 실시간 천구 좌표를 표시합니다</span>
-            )}
           </div>
 
           {/* Active Atlas Sheet Pointers if viewing an Atlas Sheet */}
@@ -1069,6 +1172,54 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             </button>
           )}
 
+          {/* Finder FOV Ring (파인더 시야 링) next to Zoom In / Out */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70">
+            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
+              파인더 시야 링
+            </span>
+            <select
+              value={config.reticleMode}
+              onChange={(e) =>
+                onChangeConfig((p) => ({
+                  ...p,
+                  reticleMode: e.target.value as FChart3Config['reticleMode'],
+                }))
+              }
+              className="text-xs font-medium rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-1.5 py-0.5 cursor-pointer"
+              title="파인더 및 아이피스 시야 링(Reticle) 선택"
+            >
+              <option value="none">표시 안 함</option>
+              <option value="telrad">Telrad (0.5°·2°·4°)</option>
+              <option value="binoculars_7x50">7×50 쌍안경 (7.0°)</option>
+              <option value="eyepiece_afov">망원경 아이피스</option>
+            </select>
+            {config.reticleMode === 'eyepiece_afov' && (
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0.1}
+                  max={20}
+                  step={0.1}
+                  value={config.customEyepieceFovDeg}
+                  onChange={(e) =>
+                    onChangeConfig((p) => ({
+                      ...p,
+                      customEyepieceFovDeg: Math.max(
+                        0.1,
+                        Math.min(20, Number(e.target.value) || 1.0)
+                      ),
+                    }))
+                  }
+                  className="w-14 px-1.5 py-0.5 text-xs font-mono tabular-nums rounded border border-amber-500/60 bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400"
+                  title="아이피스 실화각(TFOV, °)"
+                />
+                <span className="text-[11px] font-mono text-amber-600 dark:text-amber-400">
+                  °
+                </span>
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={() =>
@@ -1135,12 +1286,111 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       </div>
 
       {/* =====================================================================
-          2. PURE UNOBSTRUCTED STAR CHART CANVAS (성도 내부에는 오직 천체·격자·십자선·지평선만 렌더링)
+          2. STAR CHART CANVAS (왼쪽 위: 클릭한 대상 정보 오버레이 / 오른쪽 위: 커서 위치 오버레이)
          ===================================================================== */}
       <div
         ref={chartContainerRef}
-        className="relative flex-1 w-full min-h-[460px] overflow-hidden"
+        tabIndex={0}
+        onMouseEnter={() => {
+          isMouseOverChartRef.current = true;
+        }}
+        onMouseLeave={() => {
+          isMouseOverChartRef.current = false;
+        }}
+        onClick={() => {
+          isChartSelectedRef.current = true;
+        }}
+        className="relative flex-1 min-h-0 w-full overflow-hidden outline-none"
       >
+        {/* Top-Left of Star Chart: Clicked Object Info Bar (대상을 클릭하면 성도 왼쪽 위에 표시) */}
+        {selectedObject && (
+          <div className="absolute top-5 left-5 z-10 flex flex-wrap items-center gap-3 px-3.5 py-2 rounded-lg bg-slate-900/95 text-slate-100 border border-slate-700/90 shadow-sm text-xs">
+            <span className="font-mono font-semibold text-cyan-400">
+              {selectedObject.type === 'dso'
+                ? (selectedObject.data as DSORecord).messierId
+                  ? `메시에 ${(selectedObject.data as DSORecord).messierId}`
+                  : (selectedObject.data as DSORecord).caldwellId
+                  ? `콜드웰 ${(selectedObject.data as DSORecord).caldwellId}`
+                  : (selectedObject.data as DSORecord).id
+                : `${(selectedObject.data as StarRecord).constellation} ${(selectedObject.data as StarRecord).bayer || ''}`}
+            </span>
+            <span className="font-semibold text-white">
+              {selectedObject.type === 'dso'
+                ? (selectedObject.data as DSORecord).nameKo
+                : (selectedObject.data as StarRecord).nameKo ||
+                  (selectedObject.data as StarRecord).nameEn ||
+                  (selectedObject.data as StarRecord).id}
+            </span>
+            <span className="font-mono text-slate-300 tabular-nums">
+              {formatRaHours(selectedObject.data.raHours, true)} · {formatDecDeg(selectedObject.data.decDeg, true)} · {selectedObject.data.mag.toFixed(1)}m
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const [az, alt] = equatorialToHorizontal(
+                  selectedObject.data.raDeg,
+                  selectedObject.data.decDeg,
+                  config.observerLatDeg,
+                  lstDeg
+                );
+                onChangeConfig((prev) => ({
+                  ...prev,
+                  centerRaHours: selectedObject.data.raHours,
+                  centerDecDeg: selectedObject.data.decDeg,
+                  centerAzDeg: Number(az.toFixed(1)),
+                  centerAltDeg: Number(alt.toFixed(1)),
+                  fovDeg: selectedObject.type === 'dso' ? 14 : 20,
+                  limitStarMag: Math.max(prev.limitStarMag, 8.8),
+                }));
+              }}
+              className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-cyan-600 text-white hover:bg-cyan-500 transition-colors cursor-pointer"
+            >
+              파인더 확대
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectObject(null)}
+              className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+            >
+              닫기
+            </button>
+          </div>
+        )}
+
+        {/* Top-Right of Star Chart: Live Cursor Coordinates Readout (설정에서 켜고 끌 수 있음) */}
+        {config.showCursorCoords && (
+          <div className="absolute top-5 right-5 z-10 pointer-events-none flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-slate-200 bg-slate-900/90 border border-slate-700/80 px-3 py-1.5 rounded-lg shadow-xs">
+            <Crosshair className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            {cursorCoords ? (
+              isHorizontal ? (
+                <>
+                  <span>커서 방위각 {formatAzDeg(cursorCoords.azDeg)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>고도 {formatAltDeg(cursorCoords.altDeg)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    ({formatRaHours(cursorCoords.raHours, true)}{' '}
+                    {formatDecDeg(cursorCoords.decDeg, true)})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>커서: {formatRaHours(cursorCoords.raHours)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{formatDecDeg(cursorCoords.decDeg)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    은하위도 b={cursorCoords.galLat >= 0 ? '+' : ''}
+                    {cursorCoords.galLat.toFixed(1)}°
+                  </span>
+                </>
+              )
+            ) : (
+              <span>성도 위에 마우스를 올리면 실시간 천구 좌표를 표시합니다</span>
+            )}
+          </div>
+        )}
+
         <svg
           ref={svgRef}
           width={width}
@@ -1150,8 +1400,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerLeave={handlePointerUp}
-          onWheel={handleWheel}
-          className={`block w-full h-full ${isDragging ? 'cursor-grabbing' : 'cursor-crosshair'}`}
+          className={`absolute inset-0 block w-full h-full ${isDragging ? 'cursor-grabbing' : 'cursor-crosshair'}`}
         >
           <defs>
             <pattern
@@ -1956,52 +2205,9 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       </div>
 
       {/* =====================================================================
-          2B. OBSERVATION DATE & TIME BAR (성도 바로 아래쪽: 관측 날짜 및 시각 설정)
+          2B. ANGULAR SCALE & MAGNITUDE SCALE BAR (성도 바로 아래 첫 번째 줄로 위치 변경)
          ===================================================================== */}
-      <div className="px-4 py-3 bg-[#0B1120] text-slate-100 border-t border-slate-800 shrink-0">
-        <div className="max-w-2xl space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <label className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
-              <Calendar className="w-3.5 h-3.5 text-cyan-400" />
-              <span>관측 날짜 및 시각 (Observation Date &amp; Time)</span>
-            </label>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => handleStepHours(-1)}
-                className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors cursor-pointer"
-              >
-                -1시간
-              </button>
-              <button
-                type="button"
-                onClick={handleSetNowDateTime}
-                className="px-2.5 py-1 text-[11px] font-semibold rounded bg-cyan-950/80 hover:bg-cyan-900/80 text-cyan-400 border border-cyan-500/60 transition-colors cursor-pointer"
-              >
-                현재 시각
-              </button>
-              <button
-                type="button"
-                onClick={() => handleStepHours(1)}
-                className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors cursor-pointer"
-              >
-                +1시간
-              </button>
-            </div>
-          </div>
-          <input
-            type="datetime-local"
-            value={config.observationDateTime}
-            onChange={(e) => applyObservationDateTime(e.target.value)}
-            className="w-full px-3 py-2 text-xs font-mono rounded border border-slate-700 bg-slate-800/90 text-slate-100 focus:outline-none focus:border-cyan-500"
-          />
-        </div>
-      </div>
-
-      {/* =====================================================================
-          3. BOTTOM LEGEND & OBJECT INFO BAR (성도 바깥 하단: 각거리 축척 · 선택 천체 정보 · 등급 스케일 범례)
-         ===================================================================== */}
-      <div className="px-4 py-2.5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
+      <div className="px-4 py-1.5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
         {/* Left: Angular Scale Bar (Outside the Star Chart) */}
         {config.showScaleBar ? (
           <div className="flex items-center gap-3">
@@ -2019,65 +2225,6 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
           </div>
         ) : (
           <div />
-        )}
-
-        {/* Center: Selected Star / Messier / Caldwell Object Summary Bar (Outside the Star Chart) */}
-        {selectedObject ? (
-          <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs">
-            <span className="font-mono font-semibold text-cyan-600 dark:text-cyan-400">
-              {selectedObject.type === 'dso'
-                ? (selectedObject.data as DSORecord).messierId
-                  ? `메시에 ${(selectedObject.data as DSORecord).messierId}`
-                  : (selectedObject.data as DSORecord).caldwellId
-                  ? `콜드웰 ${(selectedObject.data as DSORecord).caldwellId}`
-                  : (selectedObject.data as DSORecord).id
-                : `${(selectedObject.data as StarRecord).constellation} ${(selectedObject.data as StarRecord).bayer || ''}`}
-            </span>
-            <span className="font-semibold text-slate-900 dark:text-slate-100">
-              {selectedObject.type === 'dso'
-                ? (selectedObject.data as DSORecord).nameKo
-                : (selectedObject.data as StarRecord).nameKo ||
-                  (selectedObject.data as StarRecord).nameEn ||
-                  (selectedObject.data as StarRecord).id}
-            </span>
-            <span className="font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-              {formatRaHours(selectedObject.data.raHours, true)} · {formatDecDeg(selectedObject.data.decDeg, true)} · {selectedObject.data.mag.toFixed(1)}m
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                const [az, alt] = equatorialToHorizontal(
-                  selectedObject.data.raDeg,
-                  selectedObject.data.decDeg,
-                  config.observerLatDeg,
-                  lstDeg
-                );
-                onChangeConfig((prev) => ({
-                  ...prev,
-                  centerRaHours: selectedObject.data.raHours,
-                  centerDecDeg: selectedObject.data.decDeg,
-                  centerAzDeg: Number(az.toFixed(1)),
-                  centerAltDeg: Number(alt.toFixed(1)),
-                  fovDeg: selectedObject.type === 'dso' ? 14 : 20,
-                  limitStarMag: Math.max(prev.limitStarMag, 8.8),
-                }));
-              }}
-              className="px-2 py-0.5 rounded text-[11px] font-medium bg-cyan-600 text-white hover:bg-cyan-500 transition-colors cursor-pointer"
-            >
-              파인더 확대
-            </button>
-            <button
-              type="button"
-              onClick={() => onSelectObject(null)}
-              className="text-[11px] text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-            >
-              닫기
-            </button>
-          </div>
-        ) : (
-          <div className="text-xs text-slate-400 font-mono hidden xl:block">
-            성도 위의 항성이나 메시에·콜드웰 성운을 클릭하면 상세 제원이 표시됩니다
-          </div>
         )}
 
         {/* Right: Magnitude Scale Legend (Outside the Star Chart) */}
@@ -2113,6 +2260,145 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             </div>
           </div>
         )}
+      </div>
+
+      {/* =====================================================================
+          3. OBSERVATION DATE & TIME BAR (두 번째 줄: -1일/-1시간/+1시간/+1일 및 되감기·재생/정지·현재시각·빨리감기)
+         ===================================================================== */}
+      <div className="px-4 py-2 bg-[#0B1120] text-slate-100 border-t border-slate-800 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <label className="text-xs font-medium text-slate-200 flex items-center gap-1.5 whitespace-nowrap shrink-0">
+            <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+            <span>관측 날짜 및 시각 (Observation Date &amp; Time)</span>
+          </label>
+          <input
+            type="datetime-local"
+            step="1"
+            value={config.observationDateTime}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              if (nextVal) {
+                const parsed = new Date(nextVal);
+                if (!Number.isNaN(parsed.getTime())) {
+                  simTimeMsRef.current = parsed.getTime();
+                }
+                applyObservationDateTime(nextVal);
+              }
+            }}
+            className="px-3 py-1 text-xs font-mono rounded border border-slate-700 bg-slate-800/90 text-slate-100 focus:outline-none focus:border-cyan-500 shrink-0"
+          />
+
+          {/* Time Step & Stellarium-Style Transport Controls: [-1일] [-1시간] [⏪] [▶/⏸] [현재 시각] [⏩] [+1시간] [+1일] */}
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleStepHours(-24)}
+              className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors cursor-pointer"
+              title="1일 전 (-24시간)"
+            >
+              -1일
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStepHours(-1)}
+              className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors cursor-pointer"
+              title="1시간 전 (-1시간)"
+            >
+              -1시간
+            </button>
+
+            {/* Rewind / Play-Pause / Now / Fast-Forward Cluster */}
+            <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-900/90 border border-slate-700/90">
+              <button
+                type="button"
+                onClick={handleRewind}
+                className={`p-1 rounded transition-colors cursor-pointer ${
+                  simSpeed < 0
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50'
+                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                }`}
+                title="시간 되감기 (여러 번 누르면 되감기 속도 증가)"
+              >
+                <Rewind className="w-3.5 h-3.5 fill-current" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTogglePlayPause}
+                className={`px-2 py-1 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${
+                  simSpeed !== 0
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700'
+                }`}
+                title={simSpeed !== 0 ? '일시정지 (다시 누르면 정지)' : '정상 시간 속도로 재생 (1×)'}
+              >
+                {simSpeed !== 0 ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5 fill-current" />
+                    <span>정지</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>재생</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSetNowDateTime}
+                className="px-2.5 py-1 text-[11px] font-semibold rounded bg-cyan-950/90 hover:bg-cyan-900 text-cyan-400 border border-cyan-500/70 transition-colors cursor-pointer"
+                title="현재 시각으로 즉시 이동"
+              >
+                현재 시각
+              </button>
+
+              <button
+                type="button"
+                onClick={handleFastForward}
+                className={`p-1 rounded transition-colors cursor-pointer ${
+                  simSpeed > 1
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50'
+                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                }`}
+                title="시간 빨리감기 (여러 번 누르면 빨리감기 속도 증가)"
+              >
+                <FastForward className="w-3.5 h-3.5 fill-current" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleStepHours(1)}
+              className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors cursor-pointer"
+              title="1시간 후 (+1시간)"
+            >
+              +1시간
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStepHours(24)}
+              className="px-2.5 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors cursor-pointer"
+              title="1일 후 (+24시간)"
+            >
+              +1일
+            </button>
+
+            {/* Active Simulation Speed Indicator */}
+            {simSpeed !== 0 && (
+              <span
+                className={`ml-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold border ${
+                  simSpeed < 0
+                    ? 'bg-amber-950/60 text-amber-300 border-amber-500/50'
+                    : 'bg-emerald-950/60 text-emerald-300 border-emerald-500/50'
+                }`}
+              >
+                {formatSimSpeedLabel(simSpeed)}
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

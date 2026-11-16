@@ -1,14 +1,17 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  BookOpen,
   Check,
-  Compass,
-  Eye,
   FileDown,
-  Grid,
-  Layers,
+  Lock,
   Sliders,
+  Unlock,
 } from 'lucide-react';
+import {
+  BRIGHT_STARS,
+  CONSTELLATION_DATA,
+  MESSIER_CATALOG,
+  MILKY_WAY_CONTOURS,
+} from '../data/astronomyData';
 import {
   AtlasGeneratorOptions,
   AtlasPresetId,
@@ -16,6 +19,7 @@ import {
 } from '../types/astronomy';
 import {
   ATLAS_PRESETS,
+  bvToStarColor,
   formatDecDeg,
   formatRaHours,
 } from '../utils/atlasGenerator';
@@ -39,6 +43,9 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
   onGeneratePdf,
   pdfProgress,
 }) => {
+  const [hoveredSheetNumber, setHoveredSheetNumber] = useState<number | null>(null);
+  const isCustomPreset = options.presetId === 'custom_grid';
+
   const handleSelectPreset = (presetId: AtlasPresetId) => {
     const p = ATLAS_PRESETS[presetId];
     onChangeOptions((prev) => ({
@@ -57,6 +64,77 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
   const totalStarsAcrossAtlas = sheets.reduce((acc, s) => acc + s.starCountEstimate, 0);
   const totalDsosAcrossAtlas = sheets.reduce((acc, s) => acc + s.dsoCount, 0);
 
+  // Coordinate helper for the All-Sky Index Map SVG (RA: 24h on left -> 0h on right, Dec: +90° top -> -90° bottom)
+  // Map frame: x in [40, 690] (width 650), y in [20, 330] (height 310)
+  const raDegToX = (raDeg: number): number => {
+    const normRaHours = (((raDeg / 15) % 24) + 24) % 24;
+    return 40 + ((24 - normRaHours) / 24) * 650;
+  };
+  const decDegToY = (decDeg: number): number => {
+    const clampedDec = Math.max(-90, Math.min(90, decDeg));
+    return 20 + ((90 - clampedDec) / 180) * 310;
+  };
+
+  // Precompute Ecliptic curve and Milky Way contour polylines for the All-Sky Star Chart background
+  const eclipticPointsStr = useMemo(() => {
+    const pts: string[] = [];
+    const epsRad = (23.4393 * Math.PI) / 180;
+    for (let raH = 24; raH >= 0; raH -= 0.25) {
+      const raRad = (raH * 15 * Math.PI) / 180;
+      const decRad = Math.atan(Math.sin(raRad) * Math.tan(epsRad));
+      const decDeg = (decRad * 180) / Math.PI;
+      const x = 40 + ((24 - raH) / 24) * 650;
+      const y = decDegToY(decDeg);
+      pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    }
+    return pts.join(' ');
+  }, []);
+
+  const milkyWayPaths = useMemo(() => {
+    const paths: Array<{ d: string; level: number }> = [];
+    MILKY_WAY_CONTOURS.forEach((mw) => {
+      mw.polygons.forEach((poly) => {
+        let currentSegment: Array<[number, number]> = [];
+        for (let i = 0; i < poly.length; i++) {
+          const [ra, dec] = poly[i];
+          const x = raDegToX(ra);
+          const y = decDegToY(dec);
+          if (currentSegment.length > 0) {
+            const prevX = currentSegment[currentSegment.length - 1][0];
+            if (Math.abs(x - prevX) > 160) {
+              if (currentSegment.length >= 2) {
+                paths.push({
+                  d:
+                    'M ' +
+                    currentSegment.map((p) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' L '),
+                  level: mw.level,
+                });
+              }
+              currentSegment = [];
+            }
+          }
+          currentSegment.push([x, y]);
+        }
+        if (currentSegment.length >= 2) {
+          paths.push({
+            d:
+              'M ' +
+              currentSegment.map((p) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' L '),
+            level: mw.level,
+          });
+        }
+      });
+    });
+    return paths;
+  }, []);
+
+  const hoveredOrActiveSheet = useMemo(() => {
+    if (hoveredSheetNumber !== null) {
+      return sheets.find((s) => s.sheetNumber === hoveredSheetNumber) || activeSheet;
+    }
+    return activeSheet;
+  }, [hoveredSheetNumber, sheets, activeSheet]);
+
   return (
     <div className="space-y-6">
       {/* Header & Primary PDF Export Banner */}
@@ -70,7 +148,7 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
               다중 페이지 맞춤형 벡터 성도집 (fchart3-atlas) 분할 및 PDF 생성
             </h2>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              원하는 한계등급(Limiting Magnitude)과 페이지당 화각(FOV)을 지정하면 적위 띠(Declination Band)별로 천구를 자동 분할하여 표지·전천 색인도·개별 성도가 포함된 벡터 PDF 성도집을 생성합니다.
+              원하는 성도집 프리셋을 선택하거나 사용자 정의 분할 성도집에서 한계등급·화각을 설정하면, 전천 성도 위의 분리칸 색인도와 개별 분할 성도가 포함된 벡터 PDF 성도집을 생성합니다.
             </p>
           </div>
 
@@ -165,9 +243,9 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
         </div>
       </div>
 
-      {/* Two-Column Split: Left Preset & Custom Parameters | Right All-Sky Interactive Tessellation Map */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        {/* Left Column: Presets & Partition Parameters */}
+      {/* Two-Column Split: Left Preset & Custom Parameters | Right All-Sky Star Chart Index Map + Partitioned Sheets List Directly Below */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left Column (5 cols): Presets & Partition Parameters (Locked unless 'custom_grid' is selected) */}
         <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 flex flex-col justify-between space-y-5">
           <div>
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
@@ -207,380 +285,599 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
               })}
             </div>
 
-            {/* Fine-Grained Partition Sliders */}
-            <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3.5">
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-600 dark:text-slate-400">페이지당 화각 (Chart FOV)</span>
-                  <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
-                    {options.fovPerSheetDeg}°
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={16}
-                  max={65}
-                  step={2}
-                  value={options.fovPerSheetDeg}
-                  onChange={(e) =>
-                    onChangeOptions((prev) => ({
-                      ...prev,
-                      presetId: 'custom_grid',
-                      fovPerSheetDeg: Number(e.target.value),
-                    }))
-                  }
-                  className="w-full accent-cyan-600"
-                />
+            {/* Fine-Grained Partition Parameters Header + Lock Notice */}
+            <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                  {isCustomPreset ? (
+                    <Unlock className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5 text-amber-500" />
+                  )}
+                  <span>세부 파라미터 설정</span>
+                </span>
+                <span
+                  className={`text-[11px] font-mono px-2 py-0.5 rounded ${
+                    isCustomPreset
+                      ? 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-600 dark:text-cyan-400 border border-cyan-500/40'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  {isCustomPreset
+                    ? '사용자 정의 편집 가능'
+                    : '사용자 정의 분할 성도집 외 변경 불가'}
+                </span>
               </div>
 
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    항성 한계등급 (Limiting Star Mag · 최대 14.0)
-                  </span>
-                  <span className="font-mono font-semibold text-cyan-600 dark:text-cyan-400">
-                    {options.limitStarMag.toFixed(1)} mag
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={5.0}
-                  max={14.0}
-                  step={0.2}
-                  value={options.limitStarMag}
-                  onChange={(e) =>
-                    onChangeOptions((prev) => ({
-                      ...prev,
-                      presetId: 'custom_grid',
-                      limitStarMag: Number(e.target.value),
-                    }))
-                  }
-                  className="w-full accent-cyan-600"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    성운·은하 한계등급 (Limiting DSO Mag · 최대 14.0)
-                  </span>
-                  <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
-                    {options.limitDsoMag.toFixed(1)} mag
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={5.0}
-                  max={14.0}
-                  step={0.2}
-                  value={options.limitDsoMag}
-                  onChange={(e) =>
-                    onChangeOptions((prev) => ({
-                      ...prev,
-                      presetId: 'custom_grid',
-                      limitDsoMag: Number(e.target.value),
-                    }))
-                  }
-                  className="w-full accent-cyan-600"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    최소 적위 (Dec Min)
-                  </label>
-                  <select
-                    value={options.decMinDeg}
-                    onChange={(e) =>
-                      onChangeOptions((prev) => ({
-                        ...prev,
-                        presetId: 'custom_grid',
-                        decMinDeg: Number(e.target.value),
-                      }))
-                    }
-                    className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                  >
-                    <option value={-90}>-90° (남천극 포함)</option>
-                    <option value={-45}>-45° (남천 중위도)</option>
-                    <option value={-35}>-35° (한반도 남쪽 한계)</option>
-                    <option value={-20}>-20° (적도 남부)</option>
-                    <option value={0}>0° (북반구 전용)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    인쇄 배색 테마 (PDF Theme)
-                  </label>
-                  <select
-                    value={options.colorScheme}
-                    onChange={(e) =>
-                      onChangeOptions((prev) => ({
-                        ...prev,
-                        colorScheme: e.target.value as AtlasGeneratorOptions['colorScheme'],
-                      }))
-                    }
-                    className="w-full px-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                  >
-                    <option value="paper">백색 출판 성도 (Paper Print)</option>
-                    <option value="observatory">다크 천문대 (Observatory Dark)</option>
-                    <option value="nightvision">야간 적색광 (Night Vision Red)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 pt-1">
-                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={options.includeCoverPage}
-                    onChange={(e) =>
-                      onChangeOptions((prev) => ({
-                        ...prev,
-                        includeCoverPage: e.target.checked,
-                      }))
-                    }
-                    className="rounded accent-cyan-600"
-                  />
-                  <span>표지 및 제원표 포함</span>
-                </label>
-                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={options.includeIndexMapPage}
-                    onChange={(e) =>
-                      onChangeOptions((prev) => ({
-                        ...prev,
-                        includeIndexMapPage: e.target.checked,
-                      }))
-                    }
-                    className="rounded accent-cyan-600"
-                  />
-                  <span>전천 분할 색인도 포함</span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Interactive All-Sky Rectangular Tessellation Map */}
-        <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  전천 성도 분할 색인도 (All-Sky Sheet Index Map)
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  분할된 타일(#01 ~ #{sheets.length})을 클릭하면 해당 성도의 중심 적경/적위 및 화각으로 즉시 이동합니다.
-                </p>
-              </div>
-              {activeSheet && (
-                <div className="text-xs font-mono text-cyan-600 dark:text-cyan-400 shrink-0">
-                  선택됨: Chart #{activeSheet.sheetNumber} ({activeSheet.titleKo})
-                </div>
-              )}
-            </div>
-
-            {/* SVG Rectangular All-Sky Tessellation Preview */}
-            <div className="w-full overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-950">
-              <svg
-                viewBox="0 0 720 360"
-                className="w-full h-auto block select-none"
+              {/* Disabled unless 'custom_grid' (사용자 정의 분할 성도집) is selected */}
+              <fieldset
+                disabled={!isCustomPreset}
+                className={`space-y-3.5 transition-opacity ${
+                  !isCustomPreset ? 'opacity-45 pointer-events-none select-none' : ''
+                }`}
               >
-                <rect x="0" y="0" width="720" height="360" fill="#070A12" />
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-600 dark:text-slate-400">페이지당 화각 (Chart FOV)</span>
+                    <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+                      {options.fovPerSheetDeg}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={16}
+                    max={65}
+                    step={2}
+                    disabled={!isCustomPreset}
+                    value={options.fovPerSheetDeg}
+                    onChange={(e) => {
+                      if (!isCustomPreset) return;
+                      onChangeOptions((prev) => ({
+                        ...prev,
+                        fovPerSheetDeg: Number(e.target.value),
+                      }));
+                    }}
+                    className="w-full accent-cyan-600 disabled:cursor-not-allowed"
+                  />
+                </div>
 
-                {/* Equatorial Grid Lines on Index Map */}
-                {[0, 4, 8, 12, 16, 20, 24].map((h) => {
-                  const x = 40 + ((24 - h) / 24) * 650;
-                  return (
-                    <g key={`idx-ra-${h}`}>
-                      <line
-                        x1={x}
-                        y1={20}
-                        x2={x}
-                        y2={330}
-                        stroke="#1E293B"
-                        strokeWidth="1"
-                      />
-                      <text
-                        x={x}
-                        y={346}
-                        textAnchor="middle"
-                        fill="#64748B"
-                        fontSize="10"
-                        fontFamily="JetBrains Mono, monospace"
-                      >
-                        {h}h
-                      </text>
-                    </g>
-                  );
-                })}
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-600 dark:text-slate-400">
+                      항성 한계등급 (Limiting Star Mag · 최대 14.0)
+                    </span>
+                    <span className="font-mono font-semibold text-cyan-600 dark:text-cyan-400">
+                      {options.limitStarMag.toFixed(1)} mag
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={5.0}
+                    max={14.0}
+                    step={0.2}
+                    disabled={!isCustomPreset}
+                    value={options.limitStarMag}
+                    onChange={(e) => {
+                      if (!isCustomPreset) return;
+                      onChangeOptions((prev) => ({
+                        ...prev,
+                        limitStarMag: Number(e.target.value),
+                      }));
+                    }}
+                    className="w-full accent-cyan-600 disabled:cursor-not-allowed"
+                  />
+                </div>
 
-                {[-90, -60, -30, 0, 30, 60, 90].map((d) => {
-                  const y = 20 + ((90 - d) / 180) * 310;
-                  return (
-                    <g key={`idx-dec-${d}`}>
-                      <line
-                        x1={40}
-                        y1={y}
-                        x2={690}
-                        y2={y}
-                        stroke={d === 0 ? '#334155' : '#1E293B'}
-                        strokeWidth={d === 0 ? '1.3' : '1'}
-                      />
-                      <text
-                        x={32}
-                        y={y + 3}
-                        textAnchor="end"
-                        fill="#64748B"
-                        fontSize="9.5"
-                        fontFamily="JetBrains Mono, monospace"
-                      >
-                        {d > 0 ? `+${d}°` : `${d}°`}
-                      </text>
-                    </g>
-                  );
-                })}
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-600 dark:text-slate-400">
+                      성운·은하 한계등급 (Limiting DSO Mag · 최대 14.0)
+                    </span>
+                    <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+                      {options.limitDsoMag.toFixed(1)} mag
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={5.0}
+                    max={14.0}
+                    step={0.2}
+                    disabled={!isCustomPreset}
+                    value={options.limitDsoMag}
+                    onChange={(e) => {
+                      if (!isCustomPreset) return;
+                      onChangeOptions((prev) => ({
+                        ...prev,
+                        limitDsoMag: Number(e.target.value),
+                      }));
+                    }}
+                    className="w-full accent-cyan-600 disabled:cursor-not-allowed"
+                  />
+                </div>
 
-                {/* Sheet Partition Tiles */}
-                {sheets.map((sh) => {
-                  const cx = 40 + ((24 - sh.centerRaHours) / 24) * 650;
-                  const cy = 20 + ((90 - sh.centerDecDeg) / 180) * 310;
-                  const bw = Math.min(640, (sh.raSpanHours / 24) * 650);
-                  const bh = Math.min(90, (sh.decSpanDeg / 180) * 310);
-
-                  const x0 = Math.max(40, cx - bw / 2);
-                  const y0 = Math.max(20, cy - bh / 2);
-                  const wClamped = Math.min(bw, 690 - x0);
-                  const hClamped = Math.min(bh, 330 - y0);
-
-                  const isCurrent = activeSheet?.sheetNumber === sh.sheetNumber;
-
-                  return (
-                    <g
-                      key={`tile-${sh.sheetNumber}`}
-                      onClick={() => onSelectSheet(sh)}
-                      className="cursor-pointer group"
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                      최소 적위 (Dec Min)
+                    </label>
+                    <select
+                      disabled={!isCustomPreset}
+                      value={options.decMinDeg}
+                      onChange={(e) => {
+                        if (!isCustomPreset) return;
+                        onChangeOptions((prev) => ({
+                          ...prev,
+                          decMinDeg: Number(e.target.value),
+                        }));
+                      }}
+                      className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 disabled:cursor-not-allowed"
                     >
-                      <rect
-                        x={x0 + 1}
-                        y={y0 + 1}
-                        width={Math.max(8, wClamped - 2)}
-                        height={Math.max(8, hClamped - 2)}
-                        rx="2"
-                        fill={
-                          isCurrent
-                            ? 'rgba(6, 182, 212, 0.30)'
-                            : 'rgba(30, 41, 59, 0.48)'
+                      <option value={-90}>-90° (남천극 포함)</option>
+                      <option value={-45}>-45° (남천 중위도)</option>
+                      <option value={-35}>-35° (한반도 남쪽 한계)</option>
+                      <option value={-20}>-20° (적도 남부)</option>
+                      <option value={0}>0° (북반구 전용)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                      인쇄 배색 테마 (PDF Theme)
+                    </label>
+                    <select
+                      disabled={!isCustomPreset}
+                      value={options.colorScheme}
+                      onChange={(e) => {
+                        if (!isCustomPreset) return;
+                        onChangeOptions((prev) => ({
+                          ...prev,
+                          colorScheme: e.target.value as AtlasGeneratorOptions['colorScheme'],
+                        }));
+                      }}
+                      className="w-full px-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 disabled:cursor-not-allowed"
+                    >
+                      <option value="paper">백색 출판 성도 (Paper Print)</option>
+                      <option value="observatory">다크 천문대 (Observatory Dark)</option>
+                      <option value="nightvision">야간 적색광 (Night Vision Red)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={!isCustomPreset}
+                      checked={options.includeCoverPage}
+                      onChange={(e) => {
+                        if (!isCustomPreset) return;
+                        onChangeOptions((prev) => ({
+                          ...prev,
+                          includeCoverPage: e.target.checked,
+                        }));
+                      }}
+                      className="rounded accent-cyan-600"
+                    />
+                    <span>표지 및 제원표 포함</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={!isCustomPreset}
+                      checked={options.includeIndexMapPage}
+                      onChange={(e) => {
+                        if (!isCustomPreset) return;
+                        onChangeOptions((prev) => ({
+                          ...prev,
+                          includeIndexMapPage: e.target.checked,
+                        }));
+                      }}
+                      className="rounded accent-cyan-600"
+                    />
+                    <span>전천 분할 색인도 포함</span>
+                  </label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column (7 cols): All-Sky Star Chart with Partition Cells Overlay + Partitioned Sheets Directory Directly Below */}
+        <div className="lg:col-span-7 space-y-5">
+          {/* Card 1: Interactive All-Sky Star Chart with Partition Cells Overlay */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 flex flex-col justify-between">
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    전천 성도 분할 색인도 (All-Sky Star Chart &amp; Partition Index Map)
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    전천 성도(88 별자리·은하수·항성·메시에 천체) 위에 표시된 분리칸(#01 ~ #{sheets.length})을 클릭하면 해당 성도로 즉시 이동합니다.
+                  </p>
+                </div>
+                {hoveredOrActiveSheet && (
+                  <div className="text-xs font-mono px-2.5 py-1 rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300 border border-cyan-500/40 shrink-0">
+                    Chart #{String(hoveredOrActiveSheet.sheetNumber).padStart(2, '0')} · {hoveredOrActiveSheet.titleKo} ({formatRaHours(hoveredOrActiveSheet.centerRaHours, true)} / {formatDecDeg(hoveredOrActiveSheet.centerDecDeg, true)})
+                  </div>
+                )}
+              </div>
+
+              {/* SVG All-Sky Star Chart + Partition Grid Overlay */}
+              <div className="w-full overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-[#050914]">
+                <svg
+                  viewBox="0 0 720 360"
+                  className="w-full h-auto block select-none"
+                >
+                  <defs>
+                    <clipPath id="all-sky-index-clip">
+                      <rect x="40" y="20" width="650" height="310" />
+                    </clipPath>
+                  </defs>
+
+                  <rect x="0" y="0" width="720" height="360" fill="#050914" />
+                  <rect x="40" y="20" width="650" height="310" fill="#081022" />
+
+                  {/* ===========================================================
+                      1. ALL-SKY STAR CHART LAYER (전천 성도 배경: 은하수 · 좌표격자 · 황도 · 88 별자리 · 항성 · 메시에 천체)
+                     =========================================================== */}
+                  <g clipPath="url(#all-sky-index-clip)">
+                    {/* Milky Way Contours on All-Sky Chart */}
+                    {milkyWayPaths.map((mw, idx) => (
+                      <path
+                        key={`idx-mw-${idx}`}
+                        d={mw.d}
+                        fill="none"
+                        stroke={
+                          mw.level === 3
+                            ? 'rgba(56, 189, 248, 0.25)'
+                            : mw.level === 2
+                            ? 'rgba(56, 189, 248, 0.16)'
+                            : 'rgba(148, 163, 184, 0.12)'
                         }
-                        stroke={isCurrent ? '#22D3EE' : '#38BDF8'}
-                        strokeWidth={isCurrent ? '1.8' : '0.8'}
+                        strokeWidth={mw.level === 3 ? '3.5' : mw.level === 2 ? '5.5' : '8'}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
                       />
-                      <text
-                        x={x0 + wClamped / 2}
-                        y={y0 + hClamped / 2 + 3.5}
-                        textAnchor="middle"
-                        fill={isCurrent ? '#FFFFFF' : '#BAE6FD'}
-                        fontSize="10"
-                        fontWeight="700"
-                        fontFamily="JetBrains Mono, monospace"
+                    ))}
+
+                    {/* Ecliptic Curve (황도선) */}
+                    <polyline
+                      points={eclipticPointsStr}
+                      fill="none"
+                      stroke="rgba(244, 63, 94, 0.55)"
+                      strokeWidth="1.1"
+                      strokeDasharray="4,3"
+                    />
+
+                    {/* All 88 Official IAU Constellation Stick Figures & Labels */}
+                    {CONSTELLATION_DATA.map((con) => {
+                      const cx = raDegToX(con.raCenterHours * 15);
+                      const cy = decDegToY(con.decCenterDeg);
+                      return (
+                        <g key={`idx-con-${con.constellation}`}>
+                          {con.lines.map(([p1, p2], sIdx) => {
+                            const x1 = raDegToX(p1[0]);
+                            const y1 = decDegToY(p1[1]);
+                            const x2 = raDegToX(p2[0]);
+                            const y2 = decDegToY(p2[1]);
+                            // Skip segments wrapping across the 0h/24h border
+                            if (Math.abs(x2 - x1) > 160) return null;
+                            return (
+                              <line
+                                key={`idx-seg-${con.constellation}-${sIdx}`}
+                                x1={x1}
+                                y1={y1}
+                                x2={x2}
+                                y2={y2}
+                                stroke="rgba(56, 189, 248, 0.55)"
+                                strokeWidth="0.9"
+                              />
+                            );
+                          })}
+                          {cy > 28 && cy < 322 && (
+                            <text
+                              x={cx}
+                              y={cy - 3}
+                              textAnchor="middle"
+                              fill="rgba(148, 163, 184, 0.78)"
+                              fontSize="6.5"
+                              fontFamily="JetBrains Mono, monospace"
+                            >
+                              {con.constellation.toUpperCase()}
+                            </text>
+                          )}
+                        </g>
+                      );
+                    })}
+
+                    {/* Messier Deep-Sky Objects on All-Sky Chart */}
+                    {MESSIER_CATALOG.map((dso) => {
+                      const x = raDegToX(dso.raDeg);
+                      const y = decDegToY(dso.decDeg);
+                      return (
+                        <circle
+                          key={`idx-dso-${dso.id}`}
+                          cx={x}
+                          cy={y}
+                          r="1.3"
+                          fill="#10B981"
+                          opacity="0.75"
+                        />
+                      );
+                    })}
+
+                    {/* Bright Stars on All-Sky Chart */}
+                    {BRIGHT_STARS.filter((st) => st.mag <= 4.5).map((st) => {
+                      const x = raDegToX(st.raDeg);
+                      const y = decDegToY(st.decDeg);
+                      const r = Math.max(0.75, 2.9 - st.mag * 0.42);
+                      const color = bvToStarColor(st.bv, 'observatory');
+                      return (
+                        <circle
+                          key={`idx-star-${st.id}`}
+                          cx={x}
+                          cy={y}
+                          r={r}
+                          fill={color}
+                        />
+                      );
+                    })}
+                  </g>
+
+                  {/* ===========================================================
+                      2. EQUATORIAL COORDINATE AXES & LABELS
+                     =========================================================== */}
+                  {[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24].map((h) => {
+                    const x = 40 + ((24 - h) / 24) * 650;
+                    return (
+                      <g key={`idx-ra-${h}`}>
+                        <line
+                          x1={x}
+                          y1={20}
+                          x2={x}
+                          y2={330}
+                          stroke="rgba(51, 65, 85, 0.45)"
+                          strokeWidth="0.7"
+                        />
+                        {h % 2 === 0 && (
+                          <text
+                            x={x}
+                            y={346}
+                            textAnchor="middle"
+                            fill="#94A3B8"
+                            fontSize="9.5"
+                            fontFamily="JetBrains Mono, monospace"
+                          >
+                            {h}h
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+
+                  {[-90, -60, -30, 0, 30, 60, 90].map((d) => {
+                    const y = decDegToY(d);
+                    return (
+                      <g key={`idx-dec-${d}`}>
+                        <line
+                          x1={40}
+                          y1={y}
+                          x2={690}
+                          y2={y}
+                          stroke={d === 0 ? 'rgba(148, 163, 184, 0.55)' : 'rgba(51, 65, 85, 0.45)'}
+                          strokeWidth={d === 0 ? '1.1' : '0.7'}
+                        />
+                        <text
+                          x={34}
+                          y={y + 3}
+                          textAnchor="end"
+                          fill="#94A3B8"
+                          fontSize="9.5"
+                          fontFamily="JetBrains Mono, monospace"
+                        >
+                          {d > 0 ? `+${d}°` : `${d}°`}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* ===========================================================
+                      3. SHEET PARTITION CELLS OVERLAY (전천 성도 위에 뚜렷하게 표시되는 분리칸)
+                     =========================================================== */}
+                  {sheets.map((sh) => {
+                    const cx = 40 + ((24 - sh.centerRaHours) / 24) * 650;
+                    const cy = 20 + ((90 - sh.centerDecDeg) / 180) * 310;
+                    const bw = Math.min(650, (sh.raSpanHours / 24) * 650);
+                    const bh = Math.min(110, (sh.decSpanDeg / 180) * 310);
+
+                    const x0 = Math.max(40, Math.min(690 - bw, cx - bw / 2));
+                    const y0 = Math.max(20, Math.min(330 - bh, cy - bh / 2));
+                    const wClamped = Math.min(bw, 690 - x0);
+                    const hClamped = Math.min(bh, 330 - y0);
+
+                    const isCurrent = activeSheet?.sheetNumber === sh.sheetNumber;
+                    const isHovered = hoveredSheetNumber === sh.sheetNumber;
+
+                    return (
+                      <g
+                        key={`tile-${sh.sheetNumber}`}
+                        onClick={() => onSelectSheet(sh)}
+                        onMouseEnter={() => setHoveredSheetNumber(sh.sheetNumber)}
+                        onMouseLeave={() => setHoveredSheetNumber(null)}
+                        className="cursor-pointer"
                       >
-                        #{sh.sheetNumber}
-                      </text>
-                    </g>
-                  );
-                })}
-              </svg>
+                        {/* Outer Partition Cell Box */}
+                        <rect
+                          x={x0 + 0.8}
+                          y={y0 + 0.8}
+                          width={Math.max(10, wClamped - 1.6)}
+                          height={Math.max(10, hClamped - 1.6)}
+                          rx="2"
+                          fill={
+                            isCurrent
+                              ? 'rgba(6, 182, 212, 0.28)'
+                              : isHovered
+                              ? 'rgba(56, 189, 248, 0.20)'
+                              : 'rgba(15, 23, 42, 0.14)'
+                          }
+                          stroke={
+                            isCurrent
+                              ? '#22D3EE'
+                              : isHovered
+                              ? '#FBBF24'
+                              : 'rgba(56, 189, 248, 0.85)'
+                          }
+                          strokeWidth={isCurrent || isHovered ? '2.0' : '1.15'}
+                        />
+
+                        {/* Sheet Number Pill Badge Inside Cell */}
+                        <rect
+                          x={x0 + wClamped / 2 - 14}
+                          y={y0 + hClamped / 2 - 7}
+                          width="28"
+                          height="14"
+                          rx="3"
+                          fill={
+                            isCurrent
+                              ? '#0891B2'
+                              : isHovered
+                              ? '#D97706'
+                              : 'rgba(2, 6, 23, 0.82)'
+                          }
+                          stroke={isCurrent ? '#67E8F9' : isHovered ? '#FDE68A' : '#38BDF8'}
+                          strokeWidth="0.9"
+                        />
+                        <text
+                          x={x0 + wClamped / 2}
+                          y={y0 + hClamped / 2 + 3.2}
+                          textAnchor="middle"
+                          fill="#FFFFFF"
+                          fontSize="9"
+                          fontWeight="700"
+                          fontFamily="JetBrains Mono, monospace"
+                        >
+                          #{String(sh.sheetNumber).padStart(2, '0')}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* Outer Map Border */}
+                  <rect
+                    x="40"
+                    y="20"
+                    width="650"
+                    height="310"
+                    fill="none"
+                    stroke="#475569"
+                    strokeWidth="1.4"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            {/* Legend Strip under Index Map */}
+            <div className="mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-3 h-2 rounded-xs border border-sky-400 bg-sky-400/20 inline-block" />
+                  <span>분할 성도 분리칸 (#01~#{sheets.length})</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-3 h-0.5 bg-sky-400/70 inline-block" />
+                  <span>88 별자리선</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                  <span>메시에 천체</span>
+                </span>
+              </div>
+              <span className="font-mono">ALL-SKY J2000.0 TESSELLATION</span>
             </div>
           </div>
 
-          {/* Quick Sheet Strip */}
-          <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>적경(RA)은 천구 내부 시점에 맞춰 좌측(동쪽)으로 증가합니다.</span>
-            <span className="font-mono">J2000.0 EQUATORIAL TESSELLATION</span>
-          </div>
-        </div>
-      </div>
+          {/* Card 2: Partitioned Sheets Directory Table (Placed Directly Below the All-Sky Sheet Index Map) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                분할 성도 페이지 목록 (총 {sheets.length}매)
+              </h3>
+              <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                클릭 시 대화형 D3 성도 뷰어에서 즉시 미리보기
+              </span>
+            </div>
 
-      {/* Partitioned Sheets Directory Table */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-            분할 성도 페이지 목록 (총 {sheets.length}매)
-          </h3>
-          <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            클릭 시 대화형 D3 성도 뷰어에서 즉시 미리보기
-          </span>
-        </div>
-
-        <div className="overflow-x-auto max-h-96">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 font-mono">
-                <th className="py-2.5 px-4">SHEET</th>
-                <th className="py-2.5 px-4">구역 및 대표 별자리</th>
-                <th className="py-2.5 px-4">중심 좌표 (J2000)</th>
-                <th className="py-2.5 px-4">화각 / 한계등급</th>
-                <th className="py-2.5 px-4">수록 항성 / DSO</th>
-                <th className="py-2.5 px-4">인접 성도 (N/S/E/W)</th>
-                <th className="py-2.5 px-4 text-right">동작</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800 font-mono tabular-nums">
-              {sheets.map((sh) => {
-                const isCurrent = activeSheet?.sheetNumber === sh.sheetNumber;
-                return (
-                  <tr
-                    key={sh.sheetNumber}
-                    onClick={() => onSelectSheet(sh)}
-                    className={`cursor-pointer transition-colors ${
-                      isCurrent
-                        ? 'bg-cyan-50/70 dark:bg-cyan-950/30'
-                        : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
-                    }`}
-                  >
-                    <td className="py-2.5 px-4 font-bold text-cyan-600 dark:text-cyan-400">
-                      #{String(sh.sheetNumber).padStart(2, '0')}
-                    </td>
-                    <td className="py-2.5 px-4 font-sans">
-                      <div className="font-medium text-slate-900 dark:text-slate-100">
-                        {sh.titleKo}
-                      </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {sh.zoneLabel}
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">
-                      {formatRaHours(sh.centerRaHours, true)} · {formatDecDeg(sh.centerDecDeg, true)}
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">
-                      {sh.fovDeg}° · ≤{sh.limitStarMag.toFixed(1)}m
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">
-                      {sh.starCountEstimate.toLocaleString()}성 · {sh.dsoCount} DSO
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-500 dark:text-slate-400 text-[11px]">
-                      N:{sh.adjacentNorth || '-'} · S:{sh.adjacentSouth || '-'} · E:{sh.adjacentEast || '-'} · W:{sh.adjacentWest || '-'}
-                    </td>
-                    <td className="py-2.5 px-4 text-right font-sans">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectSheet(sh);
-                        }}
-                        className="px-2.5 py-1 rounded text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-cyan-600 hover:text-white text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap"
-                      >
-                        성도 열기
-                      </button>
-                    </td>
+            <div className="overflow-x-auto max-h-80">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 font-mono">
+                    <th className="py-2.5 px-3.5">SHEET</th>
+                    <th className="py-2.5 px-3.5">구역 및 대표 별자리</th>
+                    <th className="py-2.5 px-3.5">중심 좌표 (J2000)</th>
+                    <th className="py-2.5 px-3.5">화각 / 한계등급</th>
+                    <th className="py-2.5 px-3.5">수록 항성 / DSO</th>
+                    <th className="py-2.5 px-3.5">인접 성도</th>
+                    <th className="py-2.5 px-3.5 text-right">동작</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800 font-mono tabular-nums">
+                  {sheets.map((sh) => {
+                    const isCurrent = activeSheet?.sheetNumber === sh.sheetNumber;
+                    return (
+                      <tr
+                        key={sh.sheetNumber}
+                        onClick={() => onSelectSheet(sh)}
+                        onMouseEnter={() => setHoveredSheetNumber(sh.sheetNumber)}
+                        onMouseLeave={() => setHoveredSheetNumber(null)}
+                        className={`cursor-pointer transition-colors ${
+                          isCurrent
+                            ? 'bg-cyan-50/70 dark:bg-cyan-950/30'
+                            : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <td className="py-2 px-3.5 font-bold text-cyan-600 dark:text-cyan-400">
+                          #{String(sh.sheetNumber).padStart(2, '0')}
+                        </td>
+                        <td className="py-2 px-3.5 font-sans">
+                          <div className="font-medium text-slate-900 dark:text-slate-100">
+                            {sh.titleKo}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {sh.zoneLabel}
+                          </div>
+                        </td>
+                        <td className="py-2 px-3.5 text-slate-700 dark:text-slate-300">
+                          {formatRaHours(sh.centerRaHours, true)} · {formatDecDeg(sh.centerDecDeg, true)}
+                        </td>
+                        <td className="py-2 px-3.5 text-slate-700 dark:text-slate-300">
+                          {sh.fovDeg}° · ≤{sh.limitStarMag.toFixed(1)}m
+                        </td>
+                        <td className="py-2 px-3.5 text-slate-700 dark:text-slate-300">
+                          {sh.starCountEstimate.toLocaleString()}성 · {sh.dsoCount} DSO
+                        </td>
+                        <td className="py-2 px-3.5 text-slate-500 dark:text-slate-400 text-[11px]">
+                          N:{sh.adjacentNorth || '-'} S:{sh.adjacentSouth || '-'} E:{sh.adjacentEast || '-'} W:{sh.adjacentWest || '-'}
+                        </td>
+                        <td className="py-2 px-3.5 text-right font-sans">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectSheet(sh);
+                            }}
+                            className="px-2.5 py-1 rounded text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-cyan-600 hover:text-white text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap cursor-pointer"
+                          >
+                            성도 열기
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
     </div>

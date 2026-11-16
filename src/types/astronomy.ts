@@ -120,6 +120,7 @@ export interface FChart3Config {
   showDsoLabels: boolean;
   showMagnitudeScale: boolean; // Legend in corner
   showScaleBar: boolean; // Angular scale bar
+  showCursorCoords: boolean; // Live cursor coordinate readout in top-right of chart
 
   // Finder Reticle / Telrad Overlay
   reticleMode: 'none' | 'telrad' | 'binoculars_7x50' | 'eyepiece_afov' | 'ccd_sensor';
