@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FChart3 Vector Star Atlas Studio</title>
+    <meta name="description" content="D3.js vector astronomical star chart and fchart3-atlas multi-page PDF sky atlas generator with constellation boundaries, Milky Way isophote contours, and nebula outlines." />
+    <meta property="og:title" content="FChart3 Vector Star Atlas Studio" />
+    <meta property="og:description" content="D3.js vector astronomical star chart and fchart3-atlas multi-page PDF sky atlas generator with constellation boundaries, Milky Way isophote contours, and nebula outlines." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      window.__loadPrebuiltGitHubBundle = function () {
+        if (window.__FCHART3_MOUNTED__ || window.__FCHART3_FALLBACK_LOADING__) return;
+        if (!document.querySelector('script[data-vite-dev-entry="true"]')) return;
+        window.__FCHART3_FALLBACK_LOADING__ = true;
+        var link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = './docs/assets/style.css';
+        document.head.appendChild(link);
+        var script = document.createElement('script');
+        script.type = 'module';
+        script.src = './docs/assets/app.js';
+        document.body.appendChild(script);
+      };
+      window.addEventListener('DOMContentLoaded', function () {
+        if (window.location.hostname.endsWith('github.io')) {
+          setTimeout(function () {
+            if (!window.__FCHART3_MOUNTED__) {
+              window.__loadPrebuiltGitHubBundle();
+            }
+          }, 450);
+        }
+      });
+    </script>
+    <script type="module" crossorigin src="./assets/app.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/style.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
