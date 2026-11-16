@@ -235,7 +235,9 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
 
               <div>
                 <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-600 dark:text-slate-400">항성 한계등급 (Limiting Star Mag)</span>
+                  <span className="text-slate-600 dark:text-slate-400">
+                    항성 한계등급 (Limiting Star Mag · 최대 14.0)
+                  </span>
                   <span className="font-mono font-semibold text-cyan-600 dark:text-cyan-400">
                     {options.limitStarMag.toFixed(1)} mag
                   </span>
@@ -243,7 +245,7 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                 <input
                   type="range"
                   min={5.0}
-                  max={11.0}
+                  max={14.0}
                   step={0.2}
                   value={options.limitStarMag}
                   onChange={(e) =>
@@ -251,6 +253,32 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                       ...prev,
                       presetId: 'custom_grid',
                       limitStarMag: Number(e.target.value),
+                    }))
+                  }
+                  className="w-full accent-cyan-600"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-slate-600 dark:text-slate-400">
+                    성운·은하 한계등급 (Limiting DSO Mag · 최대 14.0)
+                  </span>
+                  <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+                    {options.limitDsoMag.toFixed(1)} mag
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={5.0}
+                  max={14.0}
+                  step={0.2}
+                  value={options.limitDsoMag}
+                  onChange={(e) =>
+                    onChangeOptions((prev) => ({
+                      ...prev,
+                      presetId: 'custom_grid',
+                      limitDsoMag: Number(e.target.value),
                     }))
                   }
                   className="w-full accent-cyan-600"

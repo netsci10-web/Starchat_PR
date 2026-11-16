@@ -490,7 +490,7 @@ export const DSO_CATALOG: DSORecord[] = [
 ];
 
 /**
- * Deterministic spatial star generator (simulating fchart3 Gaia/Tycho2 catalog down to mag 11.5)
+ * Deterministic spatial star generator (simulating fchart3 Gaia/Tycho2/UCAC4 catalog down to mag 14.0)
  */
 function seededRandom(seed: number): () => number {
   let s = seed | 0;
@@ -509,7 +509,7 @@ export function getAllProceduralStars(): StarRecord[] {
 
   const list: StarRecord[] = [];
   const rng = seededRandom(20261116);
-  const totalCount = 5200;
+  const totalCount = 9600;
 
   for (let i = 0; i < totalCount; i++) {
     let raDeg: number;
@@ -529,7 +529,8 @@ export function getAllProceduralStars(): StarRecord[] {
     }
 
     const u = rng();
-    const mag = Number((4.1 + Math.pow(u, 0.52) * 7.4).toFixed(2));
+    // Distribute stars smoothly from mag 4.1 up to mag 14.0
+    const mag = Number((4.1 + Math.pow(u, 0.46) * 9.9).toFixed(2));
     const bv = Number((-0.2 + Math.pow(rng(), 1.3) * 1.75).toFixed(2));
     const isDouble = mag < 7.5 && rng() < 0.045;
 
@@ -548,6 +549,78 @@ export function getAllProceduralStars(): StarRecord[] {
 
   cachedProceduralStars = list;
   return list;
+}
+
+/**
+ * Generate deterministic deep-field stars (mag 10.5 .. 14.0) for sky tiles around the current center
+ * when zooming in or using deep limiting magnitudes (up to 14.0).
+ */
+function getDeepFieldTileStars(
+  centerRaDeg: number,
+  centerDecDeg: number,
+  fovDeg: number,
+  limitStarMag: number
+): StarRecord[] {
+  if (limitStarMag <= 10.5) return [];
+
+  const tileSizeDeg = fovDeg <= 8 ? 1.0 : fovDeg <= 20 ? 2.0 : 4.0;
+  const maxRadius = Math.min(45, fovDeg * 0.75 + tileSizeDeg);
+  const minDec = Math.max(-89, centerDecDeg - maxRadius);
+  const maxDec = Math.min(89, centerDecDeg + maxRadius);
+
+  const decStartIdx = Math.floor((minDec + 90) / tileSizeDeg);
+  const decEndIdx = Math.floor((maxDec + 90) / tileSizeDeg);
+  const totalRaTiles = Math.round(360 / tileSizeDeg);
+
+  // Scale stars per tile by how deep past mag 10.5 the user has set (up to 14.0)
+  const depthFraction = Math.min(1, (limitStarMag - 10.5) / 3.5);
+  const starsPerTile = Math.max(2, Math.round(depthFraction * 18));
+
+  const deepStars: StarRecord[] = [];
+
+  for (let dIdx = decStartIdx; dIdx <= decEndIdx; dIdx++) {
+    const tileDecMin = dIdx * tileSizeDeg - 90;
+    const tileDecCenter = tileDecMin + tileSizeDeg * 0.5;
+    for (let rIdx = 0; rIdx < totalRaTiles; rIdx++) {
+      const tileRaMin = rIdx * tileSizeDeg;
+      const tileRaCenter = tileRaMin + tileSizeDeg * 0.5;
+
+      if (
+        angularDistanceDeg(centerRaDeg, centerDecDeg, tileRaCenter, tileDecCenter) >
+        maxRadius
+      ) {
+        continue;
+      }
+
+      const tileSeed = ((dIdx + 500) * 73856093) ^ ((rIdx + 100) * 19349663);
+      const rng = seededRandom(tileSeed);
+
+      for (let k = 0; k < starsPerTile; k++) {
+        const mag = Number((10.5 + Math.pow(rng(), 0.68) * 3.5).toFixed(2));
+        if (mag > limitStarMag) continue;
+
+        const raDeg = (tileRaMin + rng() * tileSizeDeg + 360) % 360;
+        const decDeg = Math.max(-89.9, Math.min(89.9, tileDecMin + rng() * tileSizeDeg));
+        const bv = Number((-0.15 + Math.pow(rng(), 1.2) * 1.65).toFixed(2));
+
+        deepStars.push({
+          id: `UCAC4-${dIdx}-${rIdx}-${k}`,
+          constellation: '',
+          raHours: Number((raDeg / 15).toFixed(4)),
+          raDeg: Number(raDeg.toFixed(4)),
+          decDeg: Number(decDeg.toFixed(4)),
+          mag,
+          bv,
+          isProcedural: true,
+        });
+      }
+
+      if (deepStars.length >= 1400) break;
+    }
+    if (deepStars.length >= 1400) break;
+  }
+
+  return deepStars;
 }
 
 /**
@@ -572,7 +645,7 @@ export function angularDistanceDeg(
 }
 
 /**
- * Query visible stars for a given center (RA/Dec), FOV, and limiting magnitude
+ * Query visible stars for a given center (RA/Dec), FOV, and limiting magnitude (up to 14.0)
  */
 export function getVisibleStars(
   centerRaDeg: number,
@@ -598,5 +671,10 @@ export function getVisibleStars(
       angularDistanceDeg(centerRaDeg, centerDecDeg, st.raDeg, st.decDeg) <= maxRadius
   );
 
-  return [...bright, ...proc];
+  const deepTileStars =
+    limitStarMag > 10.5 && fovDeg <= 50
+      ? getDeepFieldTileStars(centerRaDeg, centerDecDeg, fovDeg, limitStarMag)
+      : [];
+
+  return [...bright, ...proc, ...deepTileStars];
 }

@@ -93,14 +93,49 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
     }
   };
 
+  const applyObservationDateTime = (nextDateTime: string) => {
+    if (!nextDateTime) return;
+    onChangeConfig((prev) => {
+      const prevLst = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
+      const nextLst = computeLstDeg(nextDateTime, prev.observerLonDeg);
+      if (prev.coordinateSystem === 'horizontal') {
+        const [raDeg, decDeg] = horizontalToEquatorial(
+          prev.centerAzDeg,
+          prev.centerAltDeg,
+          prev.observerLatDeg,
+          nextLst
+        );
+        return {
+          ...prev,
+          observationDateTime: nextDateTime,
+          centerRaHours: Number((raDeg / 15).toFixed(3)),
+          centerDecDeg: Number(Math.max(-89.5, Math.min(89.5, decDeg)).toFixed(2)),
+        };
+      } else {
+        const dLstHours = (nextLst - prevLst) / 15;
+        const nextRaHours = ((prev.centerRaHours + dLstHours) % 24 + 24) % 24;
+        const [az, alt] = equatorialToHorizontal(
+          nextRaHours * 15,
+          prev.centerDecDeg,
+          prev.observerLatDeg,
+          nextLst
+        );
+        return {
+          ...prev,
+          observationDateTime: nextDateTime,
+          centerRaHours: Number(nextRaHours.toFixed(3)),
+          centerAzDeg: Number(az.toFixed(1)),
+          centerAltDeg: Number(alt.toFixed(1)),
+        };
+      }
+    });
+  };
+
   const handleSetNowDateTime = () => {
     const now = new Date();
     const tzOffsetMs = now.getTimezoneOffset() * 60000;
     const localIso = new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 16);
-    onChangeConfig((prev) => ({
-      ...prev,
-      observationDateTime: localIso,
-    }));
+    applyObservationDateTime(localIso);
   };
 
   const handleStepHours = (deltaHours: number) => {
@@ -109,10 +144,7 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
     const shifted = new Date(valid.getTime() + deltaHours * 3600000);
     const tzOffsetMs = shifted.getTimezoneOffset() * 60000;
     const localIso = new Date(shifted.getTime() - tzOffsetMs).toISOString().slice(0, 16);
-    onChangeConfig((prev) => ({
-      ...prev,
-      observationDateTime: localIso,
-    }));
+    applyObservationDateTime(localIso);
   };
 
   const q = searchQuery.trim().toLowerCase();
@@ -442,12 +474,7 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
         <input
           type="datetime-local"
           value={config.observationDateTime}
-          onChange={(e) =>
-            onChangeConfig((p) => ({
-              ...p,
-              observationDateTime: e.target.value,
-            }))
-          }
+          onChange={(e) => applyObservationDateTime(e.target.value)}
           className="w-full px-3 py-2 text-xs font-mono rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
         />
       </div>

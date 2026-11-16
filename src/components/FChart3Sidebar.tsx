@@ -352,10 +352,12 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             </div>
           </div>
 
-          {/* Star Limiting Magnitude Slider */}
+          {/* Star Limiting Magnitude Slider (up to 14.0) */}
           <div>
             <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-slate-600 dark:text-slate-400">항성 한계등급 (-limit-star)</span>
+              <span className="text-slate-600 dark:text-slate-400">
+                항성 한계등급 (-limit-star · 최대 14.0)
+              </span>
               <span className="font-mono font-semibold tabular-nums text-cyan-600 dark:text-cyan-400">
                 ≤ {config.limitStarMag.toFixed(1)} 등급
               </span>
@@ -363,7 +365,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             <input
               type="range"
               min={4.0}
-              max={11.5}
+              max={14.0}
               step={0.1}
               value={config.limitStarMag}
               onChange={(e) =>
@@ -376,10 +378,12 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             />
           </div>
 
-          {/* DSO Limiting Magnitude Slider */}
+          {/* DSO Limiting Magnitude Slider (up to 14.0) */}
           <div>
             <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-slate-600 dark:text-slate-400">성운·은하 한계등급 (-limit-dso)</span>
+              <span className="text-slate-600 dark:text-slate-400">
+                성운·은하 한계등급 (-limit-dso · 최대 14.0)
+              </span>
               <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 ≤ {config.limitDsoMag.toFixed(1)} 등급
               </span>
@@ -387,8 +391,8 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             <input
               type="range"
               min={5.0}
-              max={13.5}
-              step={0.5}
+              max={14.0}
+              step={0.1}
               value={config.limitDsoMag}
               onChange={(e) =>
                 onChangeConfig((prev) => ({
