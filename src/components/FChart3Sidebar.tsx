@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Compass,
+  Crosshair,
   FileDown,
   FlipHorizontal,
   FlipVertical,
+  MapPin,
   Search,
   Settings,
 } from 'lucide-react';
@@ -17,7 +20,13 @@ import {
   FChart3Config,
   ProjectionMode,
 } from '../types/astronomy';
-import { formatDecDeg, formatRaHours } from '../utils/atlasGenerator';
+import {
+  computeLstDeg,
+  equatorialToHorizontal,
+  formatDecDeg,
+  formatRaHours,
+  horizontalToEquatorial,
+} from '../utils/atlasGenerator';
 
 interface FChart3SidebarProps {
   config: FChart3Config;
@@ -43,6 +52,12 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
   const [selectedConstellationCode, setSelectedConstellationCode] = useState<string>('Ori');
 
   const q = searchQuery.trim().toLowerCase();
+  const isHorizontal = config.coordinateSystem === 'horizontal';
+
+  const lstDeg = useMemo(
+    () => computeLstDeg(config.observationDateTime, config.observerLonDeg),
+    [config.observationDateTime, config.observerLonDeg]
+  );
 
   const filteredMessier = useMemo(() => {
     if (!q) return MESSIER_CATALOG;
@@ -82,6 +97,12 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
     onSelectDso(dso);
     if (dso.messierId) setSelectedMessierId(dso.id);
     if (dso.caldwellId) setSelectedCaldwellId(dso.id);
+    const [az, alt] = equatorialToHorizontal(
+      dso.raDeg,
+      dso.decDeg,
+      config.observerLatDeg,
+      lstDeg
+    );
     onChangeConfig((prev) => ({
       ...prev,
       showMessierObjects: dso.messierId ? true : prev.showMessierObjects,
@@ -89,19 +110,52 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
       showConstellationLines: true,
       centerRaHours: dso.raHours,
       centerDecDeg: dso.decDeg,
+      centerAzDeg: Number(az.toFixed(1)),
+      centerAltDeg: Number(alt.toFixed(1)),
       fovDeg: 18,
       limitStarMag: Math.max(prev.limitStarMag, 8.6),
       limitDsoMag: Math.max(prev.limitDsoMag, Number((dso.mag + 0.5).toFixed(1))),
     }));
   };
 
+  const handleCoordinateModeChange = (mode: 'equatorial' | 'horizontal') => {
+    if (mode === config.coordinateSystem) return;
+    if (mode === 'horizontal') {
+      const [az, alt] = equatorialToHorizontal(
+        config.centerRaHours * 15,
+        config.centerDecDeg,
+        config.observerLatDeg,
+        lstDeg
+      );
+      onChangeConfig((prev) => ({
+        ...prev,
+        coordinateSystem: 'horizontal',
+        centerAzDeg: Number(az.toFixed(1)),
+        centerAltDeg: Number(Math.max(-85, Math.min(89, alt)).toFixed(1)),
+      }));
+    } else {
+      const [raDeg, decDeg] = horizontalToEquatorial(
+        config.centerAzDeg,
+        config.centerAltDeg,
+        config.observerLatDeg,
+        lstDeg
+      );
+      onChangeConfig((prev) => ({
+        ...prev,
+        coordinateSystem: 'equatorial',
+        centerRaHours: Number((raDeg / 15).toFixed(3)),
+        centerDecDeg: Number(Math.max(-89.5, Math.min(89.5, decDeg)).toFixed(2)),
+      }));
+    }
+  };
+
   return (
     <aside className="w-full lg:w-[370px] shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-full overflow-y-auto">
       <div className="p-4 space-y-5">
-        {/* Section 1: Cartographic Theme & Projection */}
+        {/* Section 1: Cartographic Theme, Projection & Coordinate System */}
         <div>
           <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 mb-2 flex items-center justify-between">
-            <span>성도 출력 테마 및 구면 투영법</span>
+            <span>성도 출력 테마 · 투영법 · 좌표계</span>
             <span className="font-mono text-[11px] text-slate-400">D3-GEO</span>
           </div>
 
@@ -132,7 +186,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
           </div>
 
           {/* Projection Mode Selector */}
-          <div className="mt-2.5 grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+          <div className="mt-2 grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
             {(
               [
                 { id: 'stereographic', label: '입체(Stereo)' },
@@ -156,40 +210,117 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
               </button>
             ))}
           </div>
+
+          {/* Coordinate System Selector: Equatorial vs Horizontal */}
+          <div className="mt-2 grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+            <button
+              type="button"
+              onClick={() => handleCoordinateModeChange('equatorial')}
+              className={`py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                !isHorizontal
+                  ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-sm font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              적도좌표계 (RA/Dec)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCoordinateModeChange('horizontal')}
+              className={`py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                isHorizontal
+                  ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-sm font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              지평좌표계 (Az/Alt)
+            </button>
+          </div>
+
+          {/* Quick Observer Location & Date/Time Banner when in Horizontal Mode */}
+          {isHorizontal && (
+            <div className="mt-2 p-2.5 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-emerald-800 dark:text-emerald-300 flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>{config.observerLocationName}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={onOpenSettingsTab}
+                  className="text-emerald-700 dark:text-emerald-400 underline font-medium cursor-pointer"
+                >
+                  날짜·위치 설정
+                </button>
+              </div>
+              <div className="text-[11px] font-mono text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                <span>
+                  위도 {config.observerLatDeg.toFixed(2)}° / 경도 {config.observerLonDeg.toFixed(2)}°
+                </span>
+                <span>{config.observationDateTime.replace('T', ' ')}</span>
+              </div>
+              <label className="flex items-center justify-between text-xs text-slate-800 dark:text-slate-200 pt-1 border-t border-emerald-200/70 dark:border-emerald-800/50 cursor-pointer">
+                <span className="flex items-center gap-1.5">
+                  <Compass className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>지평선 및 지상(Ground) 표시</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={config.showHorizonGround}
+                  onChange={(e) =>
+                    onChangeConfig((p) => ({
+                      ...p,
+                      showHorizonGround: e.target.checked,
+                    }))
+                  }
+                  className="rounded accent-emerald-600 cursor-pointer"
+                />
+              </label>
+            </div>
+          )}
         </div>
 
-        {/* Section 2: FOV & Limiting Magnitude Sliders */}
+        {/* Section 2: FOV & Limiting Magnitude Sliders (Minimum FOV = 1.0°) */}
         <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3.5">
           <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center justify-between">
             <span>한계등급 (Limiting Mag) 및 화각 (FOV)</span>
             <span className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400">
-              fchart3 Engine
+              최소 1.0° 지원
             </span>
           </div>
 
-          {/* FOV Slider */}
+          {/* FOV Slider (min = 1.0°) */}
           <div>
             <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-slate-600 dark:text-slate-400">화각 (Field of View)</span>
+              <span className="text-slate-600 dark:text-slate-400">
+                화각 (Field of View · 1.0°~135°)
+              </span>
               <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {config.fovDeg.toFixed(1)}°
               </span>
             </div>
             <input
               type="range"
-              min={4}
+              min={1.0}
               max={135}
               step={0.5}
               value={config.fovDeg}
               onChange={(e) =>
                 onChangeConfig((prev) => ({
                   ...prev,
-                  fovDeg: Number(e.target.value),
+                  fovDeg: Math.max(1.0, Number(e.target.value)),
                 }))
               }
               className="w-full accent-cyan-600"
             />
             <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-0.5">
+              <button
+                type="button"
+                onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 1.0 }))}
+                className="hover:text-cyan-500 cursor-pointer font-semibold"
+              >
+                1.0° 최소
+              </button>
               <button
                 type="button"
                 onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 10 }))}
@@ -269,47 +400,126 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             />
           </div>
 
-          {/* Center RA / Dec Steppers */}
-          <div className="grid grid-cols-2 gap-2.5 pt-1">
-            <div>
-              <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                중심 적경 RA (0~24h)
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={24}
-                step={0.25}
-                value={config.centerRaHours}
-                onChange={(e) =>
-                  onChangeConfig((prev) => ({
-                    ...prev,
-                    centerRaHours: ((Number(e.target.value) % 24) + 24) % 24,
-                  }))
-                }
-                className="w-full px-2.5 py-1.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-              />
+          {/* Center Coordinate Steppers (Equatorial RA/Dec OR Horizontal Az/Alt) */}
+          {isHorizontal ? (
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  중심 방위각 Az (0~360°)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={360}
+                  step={5}
+                  value={config.centerAzDeg}
+                  onChange={(e) => {
+                    const nextAz = ((Number(e.target.value) % 360) + 360) % 360;
+                    const [raDeg, decDeg] = horizontalToEquatorial(
+                      nextAz,
+                      config.centerAltDeg,
+                      config.observerLatDeg,
+                      lstDeg
+                    );
+                    onChangeConfig((prev) => ({
+                      ...prev,
+                      centerAzDeg: nextAz,
+                      centerRaHours: Number((raDeg / 15).toFixed(3)),
+                      centerDecDeg: Number(decDeg.toFixed(2)),
+                    }));
+                  }}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  중심 고도 Alt (-90~+90°)
+                </label>
+                <input
+                  type="number"
+                  min={-90}
+                  max={90}
+                  step={2}
+                  value={config.centerAltDeg}
+                  onChange={(e) => {
+                    const nextAlt = Math.max(-89.5, Math.min(89.5, Number(e.target.value)));
+                    const [raDeg, decDeg] = horizontalToEquatorial(
+                      config.centerAzDeg,
+                      nextAlt,
+                      config.observerLatDeg,
+                      lstDeg
+                    );
+                    onChangeConfig((prev) => ({
+                      ...prev,
+                      centerAltDeg: nextAlt,
+                      centerRaHours: Number((raDeg / 15).toFixed(3)),
+                      centerDecDeg: Number(decDeg.toFixed(2)),
+                    }));
+                  }}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                중심 적위 Dec (-90~+90°)
-              </label>
-              <input
-                type="number"
-                min={-90}
-                max={90}
-                step={2}
-                value={config.centerDecDeg}
-                onChange={(e) =>
-                  onChangeConfig((prev) => ({
-                    ...prev,
-                    centerDecDeg: Math.max(-89.5, Math.min(89.5, Number(e.target.value))),
-                  }))
-                }
-                className="w-full px-2.5 py-1.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-              />
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  중심 적경 RA (0~24h)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  step={0.25}
+                  value={config.centerRaHours}
+                  onChange={(e) => {
+                    const nextRa = ((Number(e.target.value) % 24) + 24) % 24;
+                    const [az, alt] = equatorialToHorizontal(
+                      nextRa * 15,
+                      config.centerDecDeg,
+                      config.observerLatDeg,
+                      lstDeg
+                    );
+                    onChangeConfig((prev) => ({
+                      ...prev,
+                      centerRaHours: nextRa,
+                      centerAzDeg: Number(az.toFixed(1)),
+                      centerAltDeg: Number(alt.toFixed(1)),
+                    }));
+                  }}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  중심 적위 Dec (-90~+90°)
+                </label>
+                <input
+                  type="number"
+                  min={-90}
+                  max={90}
+                  step={2}
+                  value={config.centerDecDeg}
+                  onChange={(e) => {
+                    const nextDec = Math.max(-89.5, Math.min(89.5, Number(e.target.value)));
+                    const [az, alt] = equatorialToHorizontal(
+                      config.centerRaHours * 15,
+                      nextDec,
+                      config.observerLatDeg,
+                      lstDeg
+                    );
+                    onChangeConfig((prev) => ({
+                      ...prev,
+                      centerDecDeg: nextDec,
+                      centerAzDeg: Number(az.toFixed(1)),
+                      centerAltDeg: Number(alt.toFixed(1)),
+                    }));
+                  }}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Reticle & Mirroring Quick Row */}
           <div className="pt-1 grid grid-cols-2 gap-2">
@@ -392,12 +602,12 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
               className="text-[11px] font-medium text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 cursor-pointer"
             >
               <Settings className="w-3 h-3" />
-              <span>레이어 설정</span>
+              <span>상세 설정</span>
             </button>
           </div>
 
-          {/* Quick Checkboxes for Messier, Caldwell & Constellation Lines visibility */}
-          <div className="grid grid-cols-3 gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
+          {/* Quick Checkboxes for Messier, Caldwell, Constellation Lines & Center Crosshair */}
+          <div className="grid grid-cols-2 gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
             <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
               <span>메시에 ({MESSIER_CATALOG.length})</span>
               <input
@@ -435,6 +645,23 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   onChangeConfig((p) => ({
                     ...p,
                     showConstellationLines: e.target.checked,
+                  }))
+                }
+                className="rounded accent-cyan-600"
+              />
+            </label>
+            <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+              <span className="flex items-center gap-1">
+                <Crosshair className="w-3 h-3 text-cyan-600 dark:text-cyan-400" />
+                <span>중심 십자선</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={config.showCenterCrosshair}
+                onChange={(e) =>
+                  onChangeConfig((p) => ({
+                    ...p,
+                    showCenterCrosshair: e.target.checked,
                   }))
                 }
                 className="rounded accent-cyan-600"
@@ -537,11 +764,19 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   );
                   if (found) {
                     setSelectedConstellationCode(found.constellation);
+                    const [az, alt] = equatorialToHorizontal(
+                      found.raCenterHours * 15,
+                      found.decCenterDeg,
+                      config.observerLatDeg,
+                      lstDeg
+                    );
                     onChangeConfig((prev) => ({
                       ...prev,
                       showConstellationLines: true,
                       centerRaHours: found.raCenterHours,
                       centerDecDeg: found.decCenterDeg,
+                      centerAzDeg: Number(az.toFixed(1)),
+                      centerAltDeg: Number(alt.toFixed(1)),
                       fovDeg: 36,
                     }));
                   }
@@ -644,11 +879,19 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   type="button"
                   onClick={() => {
                     setSelectedConstellationCode(con.constellation);
+                    const [az, alt] = equatorialToHorizontal(
+                      con.raCenterHours * 15,
+                      con.decCenterDeg,
+                      config.observerLatDeg,
+                      lstDeg
+                    );
                     onChangeConfig((prev) => ({
                       ...prev,
                       showConstellationLines: true,
                       centerRaHours: con.raCenterHours,
                       centerDecDeg: con.decCenterDeg,
+                      centerAzDeg: Number(az.toFixed(1)),
+                      centerAltDeg: Number(alt.toFixed(1)),
                       fovDeg: 36,
                     }));
                   }}

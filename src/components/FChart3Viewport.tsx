@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import {
+  Compass,
   Crosshair,
   Download,
   FileDown,
@@ -26,11 +27,18 @@ import {
 import {
   bvToStarColor,
   celestialToLonLat,
+  computeLstDeg,
   computeStarRadius,
   createCelestialProjection,
+  equatorialToHorizontal,
   exportSingleChartPdf,
+  formatAltDeg,
+  formatAzDeg,
   formatDecDeg,
   formatRaHours,
+  horizontalToEquatorial,
+  horizontalToLonLat,
+  lonToAz,
 } from '../utils/atlasGenerator';
 
 interface FChart3ViewportProps {
@@ -43,16 +51,16 @@ interface FChart3ViewportProps {
   onSelectObject: (obj: { type: 'star' | 'dso'; data: StarRecord | DSORecord } | null) => void;
 }
 
-/**
- * Convert an array of [raDeg, decDeg] vertices into a D3 GeoJSON LineString
- * Note: D3 expects coordinates in [lon, lat], where lon = -raDeg.
- */
-function toGeoLineString(coordsRaDec: Array<[number, number]>): GeoJSON.LineString {
-  return {
-    type: 'LineString',
-    coordinates: coordsRaDec.map(([ra, dec]) => celestialToLonLat(ra, dec)),
-  };
-}
+const CARDINAL_POINTS: Array<{ az: number; short: string; labelKo: string; major: boolean }> = [
+  { az: 0, short: 'N', labelKo: '북(N)', major: true },
+  { az: 45, short: 'NE', labelKo: '북동(NE)', major: false },
+  { az: 90, short: 'E', labelKo: '동(E)', major: true },
+  { az: 135, short: 'SE', labelKo: '남동(SE)', major: false },
+  { az: 180, short: 'S', labelKo: '남(S)', major: true },
+  { az: 225, short: 'SW', labelKo: '남서(SW)', major: false },
+  { az: 270, short: 'W', labelKo: '서(W)', major: true },
+  { az: 315, short: 'NW', labelKo: '북서(NW)', major: false },
+];
 
 export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
   config,
@@ -69,6 +77,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
   const [cursorCoords, setCursorCoords] = useState<{
     raHours: number;
     decDeg: number;
+    azDeg: number;
+    altDeg: number;
     galLat: number;
   } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -77,6 +87,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     y: number;
     raHours: number;
     decDeg: number;
+    azDeg: number;
+    altDeg: number;
   } | null>(null);
 
   // Measure pure star chart canvas container
@@ -99,8 +111,40 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
   }, []);
 
   const { width, height } = dimensions;
+  const isHorizontal = config.coordinateSystem === 'horizontal';
 
-  // Build D3 Celestial Projection
+  // Local Sidereal Time (degrees) from observationDateTime and observerLonDeg
+  const lstDeg = useMemo(
+    () => computeLstDeg(config.observationDateTime, config.observerLonDeg),
+    [config.observationDateTime, config.observerLonDeg]
+  );
+
+  // Convert any celestial [raDeg, decDeg] into active projection [lon, lat]
+  const skyCoordToLonLat = useCallback(
+    (raDeg: number, decDeg: number): [number, number] => {
+      if (isHorizontal) {
+        const [az, alt] = equatorialToHorizontal(
+          raDeg,
+          decDeg,
+          config.observerLatDeg,
+          lstDeg
+        );
+        return horizontalToLonLat(az, alt);
+      }
+      return celestialToLonLat(raDeg, decDeg);
+    },
+    [isHorizontal, config.observerLatDeg, lstDeg]
+  );
+
+  const toSkyLineString = useCallback(
+    (coordsRaDec: Array<[number, number]>): GeoJSON.LineString => ({
+      type: 'LineString',
+      coordinates: coordsRaDec.map(([ra, dec]) => skyCoordToLonLat(ra, dec)),
+    }),
+    [skyCoordToLonLat]
+  );
+
+  // Build D3 Celestial Projection (supports both Equatorial and Horizontal coordinate systems, min FOV = 1.0°)
   const projection = useMemo(() => {
     return createCelestialProjection(
       config.projection,
@@ -110,7 +154,10 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       config.centerDecDeg,
       config.fovDeg,
       config.mirrorHorizontal,
-      config.mirrorVertical
+      config.mirrorVertical,
+      config.coordinateSystem,
+      config.centerAzDeg,
+      config.centerAltDeg
     );
   }, [
     config.projection,
@@ -121,29 +168,53 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     config.fovDeg,
     config.mirrorHorizontal,
     config.mirrorVertical,
+    config.coordinateSystem,
+    config.centerAzDeg,
+    config.centerAltDeg,
   ]);
 
   const geoPath = useMemo(() => d3.geoPath(projection), [projection]);
 
+  // Effective Equatorial Center [raDeg, decDeg] of current viewport for catalog filtering
+  const effectiveEqCenter = useMemo<[number, number]>(() => {
+    if (isHorizontal) {
+      return horizontalToEquatorial(
+        config.centerAzDeg,
+        config.centerAltDeg,
+        config.observerLatDeg,
+        lstDeg
+      );
+    }
+    return [((config.centerRaHours * 15) % 360 + 360) % 360, config.centerDecDeg];
+  }, [
+    isHorizontal,
+    config.centerAzDeg,
+    config.centerAltDeg,
+    config.observerLatDeg,
+    lstDeg,
+    config.centerRaHours,
+    config.centerDecDeg,
+  ]);
+
   // Visible Stars for current field of view and limiting magnitude
   const visibleStars = useMemo(() => {
-    const centerRaDeg = ((config.centerRaHours * 15) % 360 + 360) % 360;
+    const [centerRaDeg, centerDecDeg] = effectiveEqCenter;
     return getVisibleStars(
       centerRaDeg,
-      config.centerDecDeg,
+      centerDecDeg,
       config.fovDeg,
       config.limitStarMag
     ).sort((a, b) => b.mag - a.mag); // Faint stars first, bright stars on top
-  }, [config.centerRaHours, config.centerDecDeg, config.fovDeg, config.limitStarMag]);
+  }, [effectiveEqCenter, config.fovDeg, config.limitStarMag]);
 
   // Visible Deep-Sky Objects (Messier, Caldwell, and Extended Nebulae)
   const visibleDsos = useMemo(() => {
-    const centerRaDeg = ((config.centerRaHours * 15) % 360 + 360) % 360;
+    const [centerRaDeg, centerDecDeg] = effectiveEqCenter;
     const maxAngle = Math.min(180, config.fovDeg * 0.85 + 15);
     return DSO_CATALOG.filter((d) => {
       const isSelected = selectedObject?.type === 'dso' && selectedObject.data.id === d.id;
       if (!isSelected && d.mag > config.limitDsoMag) return false;
-      if (angularDistanceDeg(centerRaDeg, config.centerDecDeg, d.raDeg, d.decDeg) > maxAngle) {
+      if (angularDistanceDeg(centerRaDeg, centerDecDeg, d.raDeg, d.decDeg) > maxAngle) {
         return false;
       }
       if (isSelected) return true;
@@ -152,8 +223,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       return config.showNebulaOutlines;
     });
   }, [
-    config.centerRaHours,
-    config.centerDecDeg,
+    effectiveEqCenter,
     config.fovDeg,
     config.limitDsoMag,
     config.showMessierObjects,
@@ -162,47 +232,233 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     selectedObject,
   ]);
 
-  // Precompute Equatorial Graticule Lines
+  // Precompute Coordinate Graticule Lines (Equatorial RA/Dec OR Horizontal Alt/Az)
   const graticuleLines = useMemo(() => {
     if (!config.showEquatorialGrid) return { parallels: [], meridians: [] };
-    const decStep = config.fovDeg <= 18 ? 2 : config.fovDeg <= 40 ? 5 : 10;
-    const raStepHours = config.fovDeg <= 18 ? 0.5 : config.fovDeg <= 40 ? 1 : 2;
 
-    const parallels: Array<{ dec: number; path: string | null; labelPt: [number, number] | null }> = [];
-    for (let dec = -80; dec <= 80; dec += decStep) {
-      if (Math.abs(dec - config.centerDecDeg) > config.fovDeg * 0.95 + 15) continue;
-      const coords: Array<[number, number]> = [];
-      for (let ra = 0; ra <= 360; ra += 3) {
-        coords.push([ra, dec]);
+    if (isHorizontal) {
+      const altStep =
+        config.fovDeg <= 4
+          ? 0.5
+          : config.fovDeg <= 10
+          ? 1
+          : config.fovDeg <= 22
+          ? 2
+          : config.fovDeg <= 45
+          ? 5
+          : 10;
+      const azStep =
+        config.fovDeg <= 4
+          ? 0.5
+          : config.fovDeg <= 10
+          ? 1
+          : config.fovDeg <= 22
+          ? 5
+          : config.fovDeg <= 45
+          ? 10
+          : 15;
+
+      const parallels: Array<{
+        val: number;
+        label: string;
+        path: string | null;
+        labelPt: [number, number] | null;
+      }> = [];
+
+      const altMin = Math.max(-85, Math.floor((config.centerAltDeg - config.fovDeg) / altStep) * altStep);
+      const altMax = Math.min(85, Math.ceil((config.centerAltDeg + config.fovDeg) / altStep) * altStep);
+
+      for (let alt = altMin; alt <= altMax; alt = Number((alt + altStep).toFixed(2))) {
+        const coords: Array<[number, number]> = [];
+        for (let az = 0; az <= 360; az += 3) {
+          coords.push(horizontalToLonLat(az, alt));
+        }
+        const dPath = geoPath({ type: 'LineString', coordinates: coords });
+        const labelPt = projection(horizontalToLonLat(config.centerAzDeg, alt));
+        parallels.push({
+          val: alt,
+          label: `Alt ${alt > 0 ? `+${alt}` : alt}°`,
+          path: dPath,
+          labelPt,
+        });
       }
-      const dPath = geoPath(toGeoLineString(coords));
-      const [lon, lat] = celestialToLonLat(config.centerRaHours * 15, dec);
-      const labelPt = projection([lon, lat]);
-      parallels.push({ dec, path: dPath, labelPt });
+
+      const meridians: Array<{
+        val: number;
+        label: string;
+        path: string | null;
+        labelPt: [number, number] | null;
+      }> = [];
+
+      for (let az = 0; az < 360; az = Number((az + azStep).toFixed(2))) {
+        const coords: Array<[number, number]> = [];
+        for (let alt = -85; alt <= 85; alt += 2.5) {
+          coords.push(horizontalToLonLat(az, alt));
+        }
+        const dPath = geoPath({ type: 'LineString', coordinates: coords });
+        const labelPt = projection(horizontalToLonLat(az, config.centerAltDeg));
+        meridians.push({
+          val: az,
+          label: `Az ${az}°`,
+          path: dPath,
+          labelPt,
+        });
+      }
+
+      return { parallels, meridians };
     }
 
-    const meridians: Array<{ raH: number; path: string | null; labelPt: [number, number] | null }> = [];
-    for (let raH = 0; raH < 24; raH += raStepHours) {
+    // Equatorial RA/Dec Grid
+    const decStep =
+      config.fovDeg <= 4
+        ? 0.5
+        : config.fovDeg <= 10
+        ? 1
+        : config.fovDeg <= 18
+        ? 2
+        : config.fovDeg <= 40
+        ? 5
+        : 10;
+    const raStepHours =
+      config.fovDeg <= 4
+        ? 1 / 12
+        : config.fovDeg <= 10
+        ? 0.25
+        : config.fovDeg <= 18
+        ? 0.5
+        : config.fovDeg <= 40
+        ? 1
+        : 2;
+
+    const parallels: Array<{
+      val: number;
+      label: string;
+      path: string | null;
+      labelPt: [number, number] | null;
+    }> = [];
+
+    const decMin = Math.max(-85, Math.floor((config.centerDecDeg - config.fovDeg) / decStep) * decStep);
+    const decMax = Math.min(85, Math.ceil((config.centerDecDeg + config.fovDeg) / decStep) * decStep);
+
+    for (let dec = decMin; dec <= decMax; dec = Number((dec + decStep).toFixed(2))) {
+      const coords: Array<[number, number]> = [];
+      for (let ra = 0; ra <= 360; ra += 3) {
+        coords.push(celestialToLonLat(ra, dec));
+      }
+      const dPath = geoPath({ type: 'LineString', coordinates: coords });
+      const labelPt = projection(celestialToLonLat(config.centerRaHours * 15, dec));
+      parallels.push({
+        val: dec,
+        label: dec > 0 ? `+${dec}°` : `${dec}°`,
+        path: dPath,
+        labelPt,
+      });
+    }
+
+    const meridians: Array<{
+      val: number;
+      label: string;
+      path: string | null;
+      labelPt: [number, number] | null;
+    }> = [];
+
+    const totalSteps = Math.round(24 / raStepHours);
+    for (let i = 0; i < totalSteps; i++) {
+      const raH = i * raStepHours;
       const raDeg = raH * 15;
       const coords: Array<[number, number]> = [];
       for (let dec = -85; dec <= 85; dec += 2.5) {
-        coords.push([raDeg, dec]);
+        coords.push(celestialToLonLat(raDeg, dec));
       }
-      const dPath = geoPath(toGeoLineString(coords));
-      const [lon, lat] = celestialToLonLat(raDeg, config.centerDecDeg);
-      const labelPt = projection([lon, lat]);
-      meridians.push({ raH, path: dPath, labelPt });
+      const dPath = geoPath({ type: 'LineString', coordinates: coords });
+      const labelPt = projection(celestialToLonLat(raDeg, config.centerDecDeg));
+      const hInt = Math.floor(raH + 1e-6);
+      const mInt = Math.round((raH - hInt) * 60);
+      meridians.push({
+        val: raH,
+        label: mInt === 0 ? `${hInt}h` : `${hInt}h${String(mInt).padStart(2, '0')}m`,
+        path: dPath,
+        labelPt,
+      });
     }
 
     return { parallels, meridians };
   }, [
     config.showEquatorialGrid,
+    isHorizontal,
     config.fovDeg,
+    config.centerAltDeg,
+    config.centerAzDeg,
     config.centerDecDeg,
     config.centerRaHours,
     geoPath,
     projection,
   ]);
+
+  // Horizon & Ground Mask Geometry for Horizontal Coordinate System
+  const horizonGroundGeometry = useMemo(() => {
+    if (!isHorizontal || !config.showHorizonGround) {
+      return {
+        sectorPaths: [] as string[],
+        horizonLinePath: null as string | null,
+        groundContours: [] as string[],
+      };
+    }
+
+    // 8 convex spherical sectors covering Alt <= 0° (0..45, 45..90, ..., 315..360)
+    const sectorPaths: string[] = [];
+    for (let s = 0; s < 8; s++) {
+      const az1 = s * 45;
+      const az2 = (s + 1) * 45;
+      const ring: Array<[number, number]> = [];
+      // Top edge along horizon (Alt = 0°) from az2 down to az1 so interior (Alt < 0) is on the left
+      for (let az = az2; az >= az1; az -= 3) {
+        ring.push(horizontalToLonLat(az, 0));
+      }
+      // Left edge down to Alt = -89.5°
+      for (let alt = -5; alt >= -89.5; alt -= 10) {
+        ring.push(horizontalToLonLat(az1, alt));
+      }
+      // Bottom edge near nadir
+      for (let az = az1; az <= az2; az += 9) {
+        ring.push(horizontalToLonLat(az, -89.5));
+      }
+      // Right edge back up to horizon
+      for (let alt = -80; alt <= 0; alt += 10) {
+        ring.push(horizontalToLonLat(az2, alt));
+      }
+      ring.push(horizontalToLonLat(az2, 0));
+
+      const p = geoPath({
+        type: 'Polygon',
+        coordinates: [ring],
+      });
+      if (p) sectorPaths.push(p);
+    }
+
+    // Horizon Great Circle (Alt = 0°)
+    const horizonCoords: Array<[number, number]> = [];
+    for (let az = 0; az <= 360; az += 2) {
+      horizonCoords.push(horizontalToLonLat(az, 0));
+    }
+    const horizonLinePath = geoPath({
+      type: 'LineString',
+      coordinates: horizonCoords,
+    });
+
+    // Subtle below-horizon ground depression contours (-10°, -20°, -30°)
+    const groundContours: string[] = [];
+    [-10, -20, -30].forEach((alt) => {
+      const c: Array<[number, number]> = [];
+      for (let az = 0; az <= 360; az += 3) {
+        c.push(horizontalToLonLat(az, alt));
+      }
+      const p = geoPath({ type: 'LineString', coordinates: c });
+      if (p) groundContours.push(p);
+    });
+
+    return { sectorPaths, horizonLinePath, groundContours };
+  }, [isHorizontal, config.showHorizonGround, geoPath]);
 
   // Ecliptic & Galactic Equator paths
   const referenceCircles = useMemo(() => {
@@ -225,10 +481,10 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     }
 
     return {
-      eclipticPath: geoPath(toGeoLineString(eclCoords)),
-      galacticPath: geoPath(toGeoLineString(galCoords)),
+      eclipticPath: geoPath(toSkyLineString(eclCoords)),
+      galacticPath: geoPath(toSkyLineString(galCoords)),
     };
-  }, [config.showEclipticAndGalactic, geoPath]);
+  }, [config.showEclipticAndGalactic, geoPath, toSkyLineString]);
 
   // Palette definitions for the 3 cartographic themes
   const palette = useMemo(() => {
@@ -256,6 +512,11 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
         eclipticStroke: '#DC2626',
         galacticEqStroke: '#0284C7',
         borderStroke: '#0F172A',
+        groundFill: 'rgba(226, 232, 240, 0.90)',
+        horizonStroke: '#15803D',
+        cardinalBg: '#0F172A',
+        cardinalText: '#FFFFFF',
+        crosshairStroke: '#0284C7',
       };
     }
     if (config.colorScheme === 'nightvision') {
@@ -282,6 +543,11 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
         eclipticStroke: '#DC2626',
         galacticEqStroke: '#991B1B',
         borderStroke: '#991B1B',
+        groundFill: 'rgba(28, 6, 6, 0.92)',
+        horizonStroke: '#EF4444',
+        cardinalBg: '#450A0A',
+        cardinalText: '#FCA5A5',
+        crosshairStroke: '#EF4444',
       };
     }
     // Observatory Dark Mode
@@ -308,8 +574,45 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       eclipticStroke: '#F43F5E',
       galacticEqStroke: '#06B6D4',
       borderStroke: '#334155',
+      groundFill: 'rgba(8, 22, 18, 0.91)',
+      horizonStroke: '#10B981',
+      cardinalBg: '#064E3B',
+      cardinalText: '#A7F3D0',
+      crosshairStroke: '#22D3EE',
     };
   }, [config.colorScheme]);
+
+  // Switch between Equatorial and Horizontal while preserving current view center
+  const handleToggleCoordinateSystem = (targetMode: 'equatorial' | 'horizontal') => {
+    if (targetMode === config.coordinateSystem) return;
+    if (targetMode === 'horizontal') {
+      const [az, alt] = equatorialToHorizontal(
+        config.centerRaHours * 15,
+        config.centerDecDeg,
+        config.observerLatDeg,
+        lstDeg
+      );
+      onChangeConfig((prev) => ({
+        ...prev,
+        coordinateSystem: 'horizontal',
+        centerAzDeg: Number(az.toFixed(1)),
+        centerAltDeg: Number(Math.max(-85, Math.min(89, alt)).toFixed(1)),
+      }));
+    } else {
+      const [raDeg, decDeg] = horizontalToEquatorial(
+        config.centerAzDeg,
+        config.centerAltDeg,
+        config.observerLatDeg,
+        lstDeg
+      );
+      onChangeConfig((prev) => ({
+        ...prev,
+        coordinateSystem: 'equatorial',
+        centerRaHours: Number((raDeg / 15).toFixed(3)),
+        centerDecDeg: Number(Math.max(-89.5, Math.min(89.5, decDeg)).toFixed(2)),
+      }));
+    }
+  };
 
   // Pointer handlers for interactive celestial pan & coordinate probing
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -320,6 +623,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       y: e.clientY,
       raHours: config.centerRaHours,
       decDeg: config.centerDecDeg,
+      azDeg: config.centerAzDeg,
+      altDeg: config.centerAltDeg,
     };
   };
 
@@ -330,17 +635,43 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
 
-    // Update live equatorial coordinate probe
+    // Update live coordinate probe
     if (projection.invert) {
       const inv = projection.invert([mx, my]);
       if (inv && !Number.isNaN(inv[0]) && !Number.isNaN(inv[1])) {
-        const raDeg = ((-inv[0] % 360) + 360) % 360;
-        const decDeg = Math.max(-90, Math.min(90, inv[1]));
-        setCursorCoords({
-          raHours: raDeg / 15,
-          decDeg,
-          galLat: equatorialToGalacticLat(raDeg, decDeg),
-        });
+        if (isHorizontal) {
+          const azDeg = lonToAz(inv[0]);
+          const altDeg = Math.max(-90, Math.min(90, inv[1]));
+          const [raDeg, decDeg] = horizontalToEquatorial(
+            azDeg,
+            altDeg,
+            config.observerLatDeg,
+            lstDeg
+          );
+          setCursorCoords({
+            raHours: raDeg / 15,
+            decDeg,
+            azDeg,
+            altDeg,
+            galLat: equatorialToGalacticLat(raDeg, decDeg),
+          });
+        } else {
+          const raDeg = ((-inv[0] % 360) + 360) % 360;
+          const decDeg = Math.max(-90, Math.min(90, inv[1]));
+          const [azDeg, altDeg] = equatorialToHorizontal(
+            raDeg,
+            decDeg,
+            config.observerLatDeg,
+            lstDeg
+          );
+          setCursorCoords({
+            raHours: raDeg / 15,
+            decDeg,
+            azDeg,
+            altDeg,
+            galLat: equatorialToGalacticLat(raDeg, decDeg),
+          });
+        }
       }
     }
 
@@ -349,21 +680,51 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     const dy = e.clientY - dragStartRef.current.y;
 
     const degPerPx = config.fovDeg / Math.min(width, height);
-    const cosDec = Math.max(0.2, Math.cos((dragStartRef.current.decDeg * Math.PI) / 180));
     const mirrorSignX = config.mirrorHorizontal ? -1 : 1;
     const mirrorSignY = config.mirrorVertical ? -1 : 1;
 
-    const dRaHours = (dx * degPerPx * mirrorSignX) / (15 * cosDec);
-    const dDecDeg = dy * degPerPx * mirrorSignY;
+    if (isHorizontal) {
+      const cosAlt = Math.max(0.2, Math.cos((dragStartRef.current.altDeg * Math.PI) / 180));
+      const dAzDeg = -(dx * degPerPx * mirrorSignX) / cosAlt;
+      const dAltDeg = dy * degPerPx * mirrorSignY;
+      const nextAz = ((dragStartRef.current.azDeg + dAzDeg) % 360 + 360) % 360;
+      const nextAlt = Math.max(-89.5, Math.min(89.5, dragStartRef.current.altDeg + dAltDeg));
+      const [eqRaDeg, eqDecDeg] = horizontalToEquatorial(
+        nextAz,
+        nextAlt,
+        config.observerLatDeg,
+        lstDeg
+      );
 
-    const nextRa = ((dragStartRef.current.raHours + dRaHours) % 24 + 24) % 24;
-    const nextDec = Math.max(-89.5, Math.min(89.5, dragStartRef.current.decDeg + dDecDeg));
+      onChangeConfig((prev) => ({
+        ...prev,
+        centerAzDeg: Number(nextAz.toFixed(2)),
+        centerAltDeg: Number(nextAlt.toFixed(2)),
+        centerRaHours: Number((eqRaDeg / 15).toFixed(3)),
+        centerDecDeg: Number(eqDecDeg.toFixed(2)),
+      }));
+    } else {
+      const cosDec = Math.max(0.2, Math.cos((dragStartRef.current.decDeg * Math.PI) / 180));
+      const dRaHours = (dx * degPerPx * mirrorSignX) / (15 * cosDec);
+      const dDecDeg = dy * degPerPx * mirrorSignY;
 
-    onChangeConfig((prev) => ({
-      ...prev,
-      centerRaHours: Number(nextRa.toFixed(3)),
-      centerDecDeg: Number(nextDec.toFixed(2)),
-    }));
+      const nextRa = ((dragStartRef.current.raHours + dRaHours) % 24 + 24) % 24;
+      const nextDec = Math.max(-89.5, Math.min(89.5, dragStartRef.current.decDeg + dDecDeg));
+      const [az, alt] = equatorialToHorizontal(
+        nextRa * 15,
+        nextDec,
+        config.observerLatDeg,
+        lstDeg
+      );
+
+      onChangeConfig((prev) => ({
+        ...prev,
+        centerRaHours: Number(nextRa.toFixed(3)),
+        centerDecDeg: Number(nextDec.toFixed(2)),
+        centerAzDeg: Number(az.toFixed(1)),
+        centerAltDeg: Number(alt.toFixed(1)),
+      }));
+    }
   };
 
   const handlePointerUp = () => {
@@ -371,13 +732,13 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     dragStartRef.current = null;
   };
 
-  // Wheel handler for smooth FOV zoom
+  // Wheel handler for smooth FOV zoom (min FOV = 1.0°)
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1.12 : 0.89;
     onChangeConfig((prev) => ({
       ...prev,
-      fovDeg: Number(Math.max(4, Math.min(145, prev.fovDeg * factor)).toFixed(1)),
+      fovDeg: Number(Math.max(1.0, Math.min(145, prev.fovDeg * factor)).toFixed(1)),
     }));
   };
 
@@ -396,7 +757,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     link.download = `fchart3_vector_RA${formatRaHours(
       config.centerRaHours,
       true
-    )}_Dec${formatDecDeg(config.centerDecDeg, true)}_FOV${config.fovDeg.toFixed(0)}.svg`;
+    )}_Dec${formatDecDeg(config.centerDecDeg, true)}_FOV${config.fovDeg.toFixed(1)}.svg`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -412,19 +773,49 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       ? 5
       : config.fovDeg >= 10
       ? 2
-      : 1;
-  const barPx = Math.min(150, Math.max(40, barDeg * pxPerDeg));
+      : config.fovDeg >= 4
+      ? 1
+      : config.fovDeg >= 2
+      ? 0.5
+      : 0.2;
+  const barPx = Math.min(150, Math.max(36, barDeg * pxPerDeg));
 
   return (
     <div className="flex-1 flex flex-col h-full min-h-[620px] select-none overflow-hidden bg-white dark:bg-slate-950 border-x border-slate-200 dark:border-slate-800">
       {/* =====================================================================
-          1. TOP INSTRUMENT BAR (성도 바깥 상단: 좌표 제원 · 커서 프로브 · 줌 및 벡터 출력 버튼)
+          1. TOP INSTRUMENT BAR (성도 바깥 상단: 좌표계 전환 · 좌표 제원 · 커서 프로브 · 줌 및 벡터 출력 버튼)
          ===================================================================== */}
       <div className="px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
-        {/* Left: J2000 Coordinates, FOV, Star Count & Cursor Probe */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        {/* Left: Coordinate System Badge, J2000/Alt-Az Coordinates, FOV, Star Count & Cursor Probe */}
+        <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5">
+          {/* Quick Coordinate System Switcher */}
+          <div className="inline-flex items-center p-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-medium">
+            <button
+              type="button"
+              onClick={() => handleToggleCoordinateSystem('equatorial')}
+              className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                !isHorizontal
+                  ? 'bg-cyan-600 text-white font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              적도좌표계 (RA/Dec)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleToggleCoordinateSystem('horizontal')}
+              className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                isHorizontal
+                  ? 'bg-emerald-600 text-white font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              지평좌표계 (Az/Alt)
+            </button>
+          </div>
+
           <div className="flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-slate-400">
-            <span>J2000.0</span>
+            <span>{isHorizontal ? config.observerLocationName : 'J2000.0'}</span>
             <span aria-hidden="true">·</span>
             <span>{config.projection.toUpperCase()}</span>
             <span aria-hidden="true">·</span>
@@ -434,18 +825,37 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
           </div>
 
           <div className="flex items-baseline gap-3 font-mono tabular-nums text-xs">
-            <div>
-              <span className="text-[11px] text-slate-400 mr-1">RA</span>
-              <span className="font-semibold text-slate-900 dark:text-slate-100">
-                {formatRaHours(config.centerRaHours)}
-              </span>
-            </div>
-            <div>
-              <span className="text-[11px] text-slate-400 mr-1">DEC</span>
-              <span className="font-semibold text-slate-900 dark:text-slate-100">
-                {formatDecDeg(config.centerDecDeg)}
-              </span>
-            </div>
+            {isHorizontal ? (
+              <>
+                <div>
+                  <span className="text-[11px] text-slate-400 mr-1">AZ</span>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                    {formatAzDeg(config.centerAzDeg)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-400 mr-1">ALT</span>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                    {formatAltDeg(config.centerAltDeg)}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <span className="text-[11px] text-slate-400 mr-1">RA</span>
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    {formatRaHours(config.centerRaHours)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-400 mr-1">DEC</span>
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    {formatDecDeg(config.centerDecDeg)}
+                  </span>
+                </div>
+              </>
+            )}
             <div>
               <span className="text-[11px] text-slate-400 mr-1">MAG</span>
               <span className="font-semibold text-cyan-600 dark:text-cyan-400">
@@ -458,18 +868,31 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
           <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 rounded">
             <Crosshair className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400 shrink-0" />
             {cursorCoords ? (
-              <>
-                <span>커서: {formatRaHours(cursorCoords.raHours)}</span>
-                <span aria-hidden="true">·</span>
-                <span>{formatDecDeg(cursorCoords.decDeg)}</span>
-                <span aria-hidden="true">·</span>
-                <span>
-                  은하위도 b={cursorCoords.galLat >= 0 ? '+' : ''}
-                  {cursorCoords.galLat.toFixed(1)}°
-                </span>
-              </>
+              isHorizontal ? (
+                <>
+                  <span>커서 방위각 {formatAzDeg(cursorCoords.azDeg)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>고도 {formatAltDeg(cursorCoords.altDeg)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    ({formatRaHours(cursorCoords.raHours, true)}{' '}
+                    {formatDecDeg(cursorCoords.decDeg, true)})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>커서: {formatRaHours(cursorCoords.raHours)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{formatDecDeg(cursorCoords.decDeg)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    은하위도 b={cursorCoords.galLat >= 0 ? '+' : ''}
+                    {cursorCoords.galLat.toFixed(1)}°
+                  </span>
+                </>
+              )
             ) : (
-              <span>성도 위에 마우스를 올리면 적경·적위·은하위도를 표시합니다</span>
+              <span>성도 위에 마우스를 올리면 실시간 천구 좌표를 표시합니다</span>
             )}
           </div>
 
@@ -539,18 +962,58 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
           )}
         </div>
 
-        {/* Right: Zoom, Reset, SVG Vector & Single PDF Export Buttons (Outside the Star Chart) */}
+        {/* Right: Crosshair toggle, Ground toggle (if horizontal), Zoom, Reset, SVG Vector & Single PDF Export Buttons */}
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={() =>
               onChangeConfig((prev) => ({
                 ...prev,
-                fovDeg: Number(Math.max(4, prev.fovDeg * 0.75).toFixed(1)),
+                showCenterCrosshair: !prev.showCenterCrosshair,
+              }))
+            }
+            className={`px-2 py-1.5 rounded border text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+              config.showCenterCrosshair
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-950/60 text-cyan-600 dark:text-cyan-400'
+                : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+            title="중심 십자선 표시 전환"
+          >
+            <Crosshair className="w-3.5 h-3.5" />
+            <span>십자선</span>
+          </button>
+
+          {isHorizontal && (
+            <button
+              type="button"
+              onClick={() =>
+                onChangeConfig((prev) => ({
+                  ...prev,
+                  showHorizonGround: !prev.showHorizonGround,
+                }))
+              }
+              className={`px-2 py-1.5 rounded border text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                config.showHorizonGround
+                  ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400'
+                  : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title="지평좌표계 지상 및 지평선 표시 전환"
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>지상</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() =>
+              onChangeConfig((prev) => ({
+                ...prev,
+                fovDeg: Number(Math.max(1.0, prev.fovDeg * 0.75).toFixed(1)),
               }))
             }
             className="p-1.5 rounded border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
-            title="화각 확대 (Narrower FOV)"
+            title="화각 확대 (최소 1.0°)"
           >
             <ZoomIn className="w-4 h-4" />
           </button>
@@ -574,6 +1037,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                 ...prev,
                 centerRaHours: 5.588,
                 centerDecDeg: -2.5,
+                centerAzDeg: 180,
+                centerAltDeg: 40,
                 fovDeg: 35,
               }))
             }
@@ -605,7 +1070,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       </div>
 
       {/* =====================================================================
-          2. PURE UNOBSTRUCTED STAR CHART CANVAS (성도 내부에는 오직 천체와 격자만 렌더링)
+          2. PURE UNOBSTRUCTED STAR CHART CANVAS (성도 내부에는 오직 천체·격자·십자선·지평선만 렌더링)
          ===================================================================== */}
       <div
         ref={chartContainerRef}
@@ -670,7 +1135,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                   return (
                     <g key={mw.id}>
                       {mw.polygons.map((poly, idx) => {
-                        const dPath = geoPath(toGeoLineString(poly));
+                        const dPath = geoPath(toSkyLineString(poly));
                         if (!dPath) return null;
                         return (
                           <path
@@ -693,17 +1158,17 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
               </g>
             )}
 
-            {/* LAYER 2: Equatorial Coordinate Grid */}
+            {/* LAYER 2: Coordinate Grid (Equatorial RA/Dec or Horizontal Alt/Az) */}
             {config.showEquatorialGrid && (
-              <g id="layer-equatorial-grid">
-                {graticuleLines.parallels.map(({ dec, path, labelPt }) => (
-                  <React.Fragment key={`dec-${dec}`}>
+              <g id="layer-coordinate-grid">
+                {graticuleLines.parallels.map(({ val, label, path, labelPt }) => (
+                  <React.Fragment key={`par-${val}`}>
                     {path && (
                       <path
                         d={path}
                         fill="none"
                         stroke={palette.gridStroke}
-                        strokeWidth={dec === 0 ? 1.1 : 0.65}
+                        strokeWidth={val === 0 ? 1.1 : 0.65}
                       />
                     )}
                     {labelPt &&
@@ -716,19 +1181,19 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                           fontSize="10"
                           fontFamily="JetBrains Mono, monospace"
                         >
-                          {dec > 0 ? `+${dec}°` : `${dec}°`}
+                          {label}
                         </text>
                       )}
                   </React.Fragment>
                 ))}
-                {graticuleLines.meridians.map(({ raH, path, labelPt }) => (
-                  <React.Fragment key={`ra-${raH}`}>
+                {graticuleLines.meridians.map(({ val, label, path, labelPt }) => (
+                  <React.Fragment key={`mer-${val}`}>
                     {path && (
                       <path
                         d={path}
                         fill="none"
                         stroke={palette.gridStroke}
-                        strokeWidth={raH === 0 ? 1.1 : 0.65}
+                        strokeWidth={val === 0 ? 1.1 : 0.65}
                       />
                     )}
                     {labelPt &&
@@ -741,9 +1206,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                           fontSize="10"
                           fontFamily="JetBrains Mono, monospace"
                         >
-                          {Number.isInteger(raH)
-                            ? `${raH}h`
-                            : `${Math.floor(raH)}h30m`}
+                          {label}
                         </text>
                       )}
                   </React.Fragment>
@@ -781,7 +1244,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             {config.showConstellationBoundaries && (
               <g id="layer-constellation-boundaries">
                 {CONSTELLATION_DATA.map((con) => {
-                  const dPath = geoPath(toGeoLineString(con.boundaryPolygon));
+                  const dPath = geoPath(toSkyLineString(con.boundaryPolygon));
                   if (!dPath) return null;
                   return (
                     <path
@@ -801,19 +1264,18 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             {config.showConstellationLines && (
               <g id="layer-constellation-sticks">
                 {CONSTELLATION_DATA.map((con) => {
-                  const [lon, lat] = celestialToLonLat(
+                  const [lon, lat] = skyCoordToLonLat(
                     con.raCenterHours * 15,
                     con.decCenterDeg
                   );
                   const centerPt = projection([lon, lat]);
 
-                  // Collect visible projected segments and on-screen points for fallback label positioning
                   const visiblePts: Array<[number, number]> = [];
                   const maxAllowedJump = Math.max(width, height) * 0.9;
 
                   const renderedSegments = con.lines.map(([p1, p2], idx) => {
-                    const pt1 = projection(celestialToLonLat(p1[0], p1[1]));
-                    const pt2 = projection(celestialToLonLat(p2[0], p2[1]));
+                    const pt1 = projection(skyCoordToLonLat(p1[0], p1[1]));
+                    const pt2 = projection(skyCoordToLonLat(p2[0], p2[1]));
 
                     if (pt1 && pt2) {
                       const dx = pt2[0] - pt1[0];
@@ -837,7 +1299,6 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                         visiblePts.push(pt2);
                       }
 
-                      // Skip if both endpoints are far outside viewport on the same side
                       const minX = Math.min(pt1[0], pt2[0]);
                       const maxX = Math.max(pt1[0], pt2[0]);
                       const minY = Math.min(pt1[1], pt2[1]);
@@ -864,8 +1325,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                       }
                     }
 
-                    // Fallback to D3 geoPath if spherical clipping applies
-                    const dPath = geoPath(toGeoLineString([p1, p2]));
+                    const dPath = geoPath(toSkyLineString([p1, p2]));
                     if (!dPath) return null;
                     return (
                       <path
@@ -879,7 +1339,6 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                     );
                   });
 
-                  // Determine best on-screen label position: nominal center if inside viewport, otherwise centroid of visible stick vertices
                   let labelPos: [number, number] | null = null;
                   if (
                     centerPt &&
@@ -926,7 +1385,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
               config.showCaldwellObjects) && (
               <g id="layer-nebula-outlines">
                 {visibleDsos.map((dso) => {
-                  const [lon, lat] = celestialToLonLat(dso.raDeg, dso.decDeg);
+                  const [lon, lat] = skyCoordToLonLat(dso.raDeg, dso.decDeg);
                   const pt = projection([lon, lat]);
                   const isSelected =
                     selectedObject?.type === 'dso' && selectedObject.data.id === dso.id;
@@ -952,7 +1411,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                       {config.showNebulaOutlines &&
                         dso.contourPolygons &&
                         dso.contourPolygons.map((poly, pIdx) => {
-                          const dPath = geoPath(toGeoLineString(poly));
+                          const dPath = geoPath(toSkyLineString(poly));
                           if (!dPath) return null;
                           const isGal = dso.type.includes('galaxy');
                           return (
@@ -1050,7 +1509,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
 
                             {(dso.type === 'emission_nebula' ||
                               dso.type === 'reflection_nebula' ||
-                              dso.type === 'supernova_remnant') &&
+                              dso.type === 'supernova_remnant' ||
+                              dso.type === 'dark_nebula') &&
                               !dso.contourPolygons && (
                                 <rect
                                   x={-radiusPx}
@@ -1093,7 +1553,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             {/* LAYER 6: Stars with fchart3 Separation Halos, Double Bars & Variable Rings */}
             <g id="layer-stars">
               {visibleStars.map((st) => {
-                const [lon, lat] = celestialToLonLat(st.raDeg, st.decDeg);
+                const [lon, lat] = skyCoordToLonLat(st.raDeg, st.decDeg);
                 const pt = projection([lon, lat]);
                 if (
                   !pt ||
@@ -1135,7 +1595,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                   >
                     {isSelected && (
                       <circle
-                        r={r + 6}
+                        r={r + 5}
                         fill="none"
                         stroke="#06B6D4"
                         strokeWidth="1.5"
@@ -1143,26 +1603,26 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                     )}
 
                     {st.mag < 5.5 && (
-                      <circle r={r + 1.3} fill={palette.starHalo} />
+                      <circle r={r + 1.1} fill={palette.starHalo} />
                     )}
 
                     {st.isDouble && (
                       <line
-                        x1={-(r + 3.2)}
+                        x1={-(r + 2.8)}
                         y1={0}
-                        x2={r + 3.2}
+                        x2={r + 2.8}
                         y2={0}
                         stroke={color}
-                        strokeWidth="1.15"
+                        strokeWidth="1.1"
                       />
                     )}
 
                     {st.isVariable && st.mag < 5.2 && (
                       <circle
-                        r={r + 2.4}
+                        r={r + 2.0}
                         fill="none"
                         stroke={color}
-                        strokeWidth="0.95"
+                        strokeWidth="0.9"
                       />
                     )}
 
@@ -1185,7 +1645,176 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
               })}
             </g>
 
-            {/* LAYER 7: Optional Telrad / Eyepiece Reticle Overlay */}
+            {/* LAYER 6B: Horizontal Coordinate Ground Mask, Horizon Line & Cardinal Compass Markers */}
+            {isHorizontal && config.showHorizonGround && (
+              <g id="layer-horizon-ground" pointerEvents="none">
+                {horizonGroundGeometry.sectorPaths.map((dPath, idx) => (
+                  <path
+                    key={`ground-sec-${idx}`}
+                    d={dPath}
+                    fill={palette.groundFill}
+                    stroke="none"
+                  />
+                ))}
+
+                {horizonGroundGeometry.groundContours.map((dPath, idx) => (
+                  <path
+                    key={`ground-contour-${idx}`}
+                    d={dPath}
+                    fill="none"
+                    stroke={palette.horizonStroke}
+                    strokeWidth="0.6"
+                    strokeDasharray="3,5"
+                    opacity="0.35"
+                  />
+                ))}
+
+                {horizonGroundGeometry.horizonLinePath && (
+                  <path
+                    d={horizonGroundGeometry.horizonLinePath}
+                    fill="none"
+                    stroke={palette.horizonStroke}
+                    strokeWidth="2.0"
+                  />
+                )}
+
+                {/* Cardinal & Intercardinal Compass Points along the Horizon (Alt = 0°) */}
+                {CARDINAL_POINTS.map((cp) => {
+                  const pt = projection(horizontalToLonLat(cp.az, 0));
+                  if (
+                    !pt ||
+                    pt[0] < 24 ||
+                    pt[0] > width - 24 ||
+                    pt[1] < 24 ||
+                    pt[1] > height - 24
+                  ) {
+                    return null;
+                  }
+                  return (
+                    <g key={`cardinal-${cp.short}`} transform={`translate(${pt[0]}, ${pt[1]})`}>
+                      <line
+                        x1={0}
+                        y1={-6}
+                        x2={0}
+                        y2={6}
+                        stroke={palette.horizonStroke}
+                        strokeWidth={cp.major ? 2.0 : 1.2}
+                      />
+                      <rect
+                        x={cp.major ? -24 : -22}
+                        y={8}
+                        width={cp.major ? 48 : 44}
+                        height={18}
+                        rx="4"
+                        fill={palette.cardinalBg}
+                        stroke={palette.horizonStroke}
+                        strokeWidth="1"
+                      />
+                      <text
+                        x={0}
+                        y={20}
+                        textAnchor="middle"
+                        fill={palette.cardinalText}
+                        fontSize={cp.major ? '10.5' : '9.5'}
+                        fontWeight="700"
+                        fontFamily="JetBrains Mono, monospace"
+                      >
+                        {cp.labelKo}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* Zenith Marker (Alt = +90°) */}
+                {(() => {
+                  const zPt = projection(horizontalToLonLat(0, 89.9));
+                  if (
+                    !zPt ||
+                    zPt[0] < 24 ||
+                    zPt[0] > width - 24 ||
+                    zPt[1] < 24 ||
+                    zPt[1] > height - 24
+                  ) {
+                    return null;
+                  }
+                  return (
+                    <g transform={`translate(${zPt[0]}, ${zPt[1]})`}>
+                      <circle
+                        r={5}
+                        fill="none"
+                        stroke={palette.horizonStroke}
+                        strokeWidth="1.2"
+                      />
+                      <text
+                        x={8}
+                        y={4}
+                        fill={palette.horizonStroke}
+                        fontSize="10"
+                        fontFamily="JetBrains Mono, monospace"
+                        fontWeight="600"
+                      >
+                        Z 천정 (+90°)
+                      </text>
+                    </g>
+                  );
+                })()}
+              </g>
+            )}
+
+            {/* LAYER 7: Center Crosshair (중심 십자선) */}
+            {config.showCenterCrosshair && (
+              <g
+                id="layer-center-crosshair"
+                transform={`translate(${width / 2}, ${height / 2})`}
+                pointerEvents="none"
+              >
+                <line
+                  x1={-22}
+                  y1={0}
+                  x2={-5}
+                  y2={0}
+                  stroke={palette.crosshairStroke}
+                  strokeWidth="1.4"
+                  opacity="0.9"
+                />
+                <line
+                  x1={5}
+                  y1={0}
+                  x2={22}
+                  y2={0}
+                  stroke={palette.crosshairStroke}
+                  strokeWidth="1.4"
+                  opacity="0.9"
+                />
+                <line
+                  x1={0}
+                  y1={-22}
+                  x2={0}
+                  y2={-5}
+                  stroke={palette.crosshairStroke}
+                  strokeWidth="1.4"
+                  opacity="0.9"
+                />
+                <line
+                  x1={0}
+                  y1={5}
+                  x2={0}
+                  y2={22}
+                  stroke={palette.crosshairStroke}
+                  strokeWidth="1.4"
+                  opacity="0.9"
+                />
+                <circle
+                  r={7}
+                  fill="none"
+                  stroke={palette.crosshairStroke}
+                  strokeWidth="1.1"
+                  opacity="0.75"
+                />
+              </g>
+            )}
+
+            {/* LAYER 8: Optional Telrad / Eyepiece Reticle Overlay */}
             {config.reticleMode !== 'none' && (
               <g
                 id="layer-reticle"
@@ -1305,15 +1934,23 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             </span>
             <button
               type="button"
-              onClick={() =>
+              onClick={() => {
+                const [az, alt] = equatorialToHorizontal(
+                  selectedObject.data.raDeg,
+                  selectedObject.data.decDeg,
+                  config.observerLatDeg,
+                  lstDeg
+                );
                 onChangeConfig((prev) => ({
                   ...prev,
                   centerRaHours: selectedObject.data.raHours,
                   centerDecDeg: selectedObject.data.decDeg,
+                  centerAzDeg: Number(az.toFixed(1)),
+                  centerAltDeg: Number(alt.toFixed(1)),
                   fovDeg: selectedObject.type === 'dso' ? 14 : 20,
                   limitStarMag: Math.max(prev.limitStarMag, 8.8),
-                }))
-              }
+                }));
+              }}
               className="px-2 py-0.5 rounded text-[11px] font-medium bg-cyan-600 text-white hover:bg-cyan-500 transition-colors cursor-pointer"
             >
               파인더 확대

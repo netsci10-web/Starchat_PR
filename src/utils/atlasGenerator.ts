@@ -13,9 +13,31 @@ import {
   AtlasPresetId,
   AtlasSheet,
   ChartColorScheme,
+  CoordinateSystemMode,
   FChart3Config,
   ProjectionMode,
 } from '../types/astronomy';
+
+export interface ObserverLocationPreset {
+  id: string;
+  name: string;
+  latDeg: number;
+  lonDeg: number;
+  region: string;
+}
+
+export const OBSERVER_LOCATION_PRESETS: ObserverLocationPreset[] = [
+  { id: 'seoul', name: '서울 (Seoul)', latDeg: 37.5665, lonDeg: 126.9780, region: '대한민국' },
+  { id: 'bohyun', name: '보현산 천문대 (Mt. Bohyun Obs.)', latDeg: 36.1647, lonDeg: 128.9767, region: '대한민국 경북 영천' },
+  { id: 'sobaek', name: '소백산 천문대 (Mt. Sobaek Obs.)', latDeg: 36.9344, lonDeg: 128.4575, region: '대한민국 충북 단양' },
+  { id: 'anbandegi', name: '강릉 안반데기 (Anbandegi)', latDeg: 37.6247, lonDeg: 128.7392, region: '대한민국 강원 강릉' },
+  { id: 'jeju', name: '제주 1100고지 (Jeju Hallasan)', latDeg: 33.3578, lonDeg: 126.4628, region: '대한민국 제주' },
+  { id: 'busan', name: '부산 (Busan)', latDeg: 35.1796, lonDeg: 129.0756, region: '대한민국' },
+  { id: 'daejeon', name: '대전 국립중앙과학관 (Daejeon)', latDeg: 36.3756, lonDeg: 127.3765, region: '대한민국' },
+  { id: 'tokyo', name: '도쿄 (Tokyo)', latDeg: 35.6762, lonDeg: 139.6503, region: '일본' },
+  { id: 'maunakea', name: '마우나케아 천문대 (Mauna Kea)', latDeg: 19.8207, lonDeg: -155.4681, region: '미국 하와이' },
+  { id: 'paranal', name: '파라날 천문대 (ESO Paranal)', latDeg: -24.6275, lonDeg: -70.4044, region: '칠레 아타카마' },
+];
 
 /**
  * Convert Equatorial J2000 [raDeg, decDeg] to D3 spherical coordinates [lon, lat].
@@ -27,6 +49,123 @@ export function celestialToLonLat(raDeg: number, decDeg: number): [number, numbe
   while (lon <= -180) lon += 360;
   while (lon > 180) lon -= 360;
   return [lon, Math.max(-89.99, Math.min(89.99, decDeg))];
+}
+
+/**
+ * Convert Horizontal [azDeg, altDeg] to D3 spherical coordinates [lon, lat].
+ * Looking from inside the sky dome toward the horizon (e.g., facing South = 180°),
+ * Azimuth (0°=N, 90°=E, 180°=S, 270°=W) increases clockwise (to the right),
+ * so lon = azDeg normalized to (-180, 180], and lat = altDeg.
+ */
+export function azToLon(azDeg: number): number {
+  let lon = azDeg % 360;
+  while (lon <= -180) lon += 360;
+  while (lon > 180) lon -= 360;
+  return lon;
+}
+
+export function lonToAz(lon: number): number {
+  let az = lon % 360;
+  if (az < 0) az += 360;
+  return az;
+}
+
+export function horizontalToLonLat(azDeg: number, altDeg: number): [number, number] {
+  return [azToLon(azDeg), Math.max(-89.99, Math.min(89.99, altDeg))];
+}
+
+/**
+ * Compute Local Sidereal Time (LST) in degrees [0, 360) from an observation datetime string and observer longitude.
+ */
+export function computeLstDeg(dateTimeStr: string, observerLonDeg: number): number {
+  const parsed = dateTimeStr ? new Date(dateTimeStr) : new Date();
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const jd = date.getTime() / 86400000 + 2440587.5;
+  const d = jd - 2451545.0;
+  const t = d / 36525.0;
+  const gmst =
+    280.46061837 +
+    360.98564736629 * d +
+    0.000387933 * t * t -
+    (t * t * t) / 38710000.0;
+  let lst = (gmst + observerLonDeg) % 360;
+  if (lst < 0) lst += 360;
+  return lst;
+}
+
+/**
+ * Convert Equatorial J2000 [raDeg, decDeg] to Horizontal [azDeg, altDeg]
+ * for a given observer latitude (deg) and Local Sidereal Time (deg).
+ */
+export function equatorialToHorizontal(
+  raDeg: number,
+  decDeg: number,
+  latDeg: number,
+  lstDeg: number
+): [number, number] {
+  const haRad = (((lstDeg - raDeg + 540) % 360) - 180) * (Math.PI / 180);
+  const decRad = decDeg * (Math.PI / 180);
+  const latRad = latDeg * (Math.PI / 180);
+
+  const sinAlt =
+    Math.sin(decRad) * Math.sin(latRad) +
+    Math.cos(decRad) * Math.cos(latRad) * Math.cos(haRad);
+  const altRad = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+
+  const y = -Math.sin(haRad) * Math.cos(decRad);
+  const x =
+    Math.sin(decRad) * Math.cos(latRad) -
+    Math.cos(decRad) * Math.sin(latRad) * Math.cos(haRad);
+  let azDeg = Math.atan2(y, x) * (180 / Math.PI);
+  if (azDeg < 0) azDeg += 360;
+
+  return [azDeg, altRad * (180 / Math.PI)];
+}
+
+/**
+ * Convert Horizontal [azDeg, altDeg] to Equatorial J2000 [raDeg, decDeg]
+ * for a given observer latitude (deg) and Local Sidereal Time (deg).
+ */
+export function horizontalToEquatorial(
+  azDeg: number,
+  altDeg: number,
+  latDeg: number,
+  lstDeg: number
+): [number, number] {
+  const azRad = azDeg * (Math.PI / 180);
+  const altRad = altDeg * (Math.PI / 180);
+  const latRad = latDeg * (Math.PI / 180);
+
+  const sinDec =
+    Math.sin(altRad) * Math.sin(latRad) +
+    Math.cos(altRad) * Math.cos(latRad) * Math.cos(azRad);
+  const decRad = Math.asin(Math.max(-1, Math.min(1, sinDec)));
+
+  const y = -Math.sin(azRad) * Math.cos(altRad);
+  const x =
+    Math.sin(altRad) * Math.cos(latRad) -
+    Math.cos(altRad) * Math.sin(latRad) * Math.cos(azRad);
+  const haDeg = Math.atan2(y, x) * (180 / Math.PI);
+
+  let raDeg = (lstDeg - haDeg) % 360;
+  if (raDeg < 0) raDeg += 360;
+
+  return [raDeg, decRad * (180 / Math.PI)];
+}
+
+export function formatAzDeg(azDeg: number, compact = false): string {
+  const norm = ((azDeg % 360) + 360) % 360;
+  const dirs = ['북(N)', '북동(NE)', '동(E)', '남동(SE)', '남(S)', '남서(SW)', '서(W)', '북서(NW)'];
+  const idx = Math.round(norm / 45) % 8;
+  if (compact) {
+    return `${norm.toFixed(1)}°`;
+  }
+  return `${norm.toFixed(1)}° ${dirs[idx]}`;
+}
+
+export function formatAltDeg(altDeg: number): string {
+  const sign = altDeg >= 0 ? '+' : '-';
+  return `${sign}${Math.abs(altDeg).toFixed(1)}°`;
 }
 
 /**
@@ -57,7 +196,9 @@ export function formatDecDeg(decDeg: number, compact = false): string {
 }
 
 /**
- * Compute star disc radius in pixels/points using fchart3's magnitude power-law formula
+ * Compute star disc radius in pixels/points using fchart3's magnitude power-law formula.
+ * Maximum star radius is half of previous (4.25 * baseSize instead of 8.5 * baseSize),
+ * while minimum star radius remains unchanged (0.45 * baseSize).
  */
 export function computeStarRadius(
   mag: number,
@@ -66,9 +207,8 @@ export function computeStarRadius(
   baseSize = 1.0
 ): number {
   const delta = Math.max(0, limitStarMag - mag + 0.6);
-  // Nonlinear power curve mimicking fchart3's magnitude disc appearance
-  const r = (0.45 + Math.pow(delta, 1.42) * 0.34) * scaleFactor * baseSize;
-  return Math.max(0.45 * baseSize, Math.min(8.5 * baseSize, r));
+  const r = (0.45 + Math.pow(delta, 1.42) * 0.17) * scaleFactor * baseSize;
+  return Math.max(0.45 * baseSize, Math.min(4.25 * baseSize, r));
 }
 
 /**
@@ -91,7 +231,8 @@ export function bvToStarColor(bv: number, scheme: ChartColorScheme): string {
 }
 
 /**
- * Create configured D3 GeoProjection for a given viewport width, height, center, and FOV
+ * Create configured D3 GeoProjection for a given viewport width, height, center, and FOV.
+ * Supports minimum FOV down to 1.0° and both Equatorial (RA/Dec) and Horizontal (Az/Alt) coordinate systems.
  */
 export function createCelestialProjection(
   projectionMode: ProjectionMode,
@@ -101,10 +242,13 @@ export function createCelestialProjection(
   centerDecDeg: number,
   fovDeg: number,
   mirrorHorizontal = false,
-  mirrorVertical = false
+  mirrorVertical = false,
+  coordinateSystem: CoordinateSystemMode = 'equatorial',
+  centerAzDeg = 180,
+  centerAltDeg = 40
 ): d3.GeoProjection {
   const minDim = Math.min(width, height);
-  const fovRad = (Math.max(4, Math.min(165, fovDeg)) * Math.PI) / 180;
+  const fovRad = (Math.max(1.0, Math.min(165, fovDeg)) * Math.PI) / 180;
 
   let proj: d3.GeoProjection;
   if (projectionMode === 'orthographic') {
@@ -121,12 +265,20 @@ export function createCelestialProjection(
     proj.scale(minDim / (4 * tanHalf));
   }
 
-  const centerLon = ((centerRaHours * 15) % 360 + 360) % 360;
-  // Rotate so celestial [raDeg, decDeg] mapped to [-raDeg, decDeg] is centered at [0, 0]
-  proj
-    .rotate([centerLon, -centerDecDeg, 0])
-    .translate([width / 2, height / 2])
-    .precision(0.3);
+  if (coordinateSystem === 'horizontal') {
+    const centerLon = azToLon(centerAzDeg);
+    proj
+      .rotate([-centerLon, -centerAltDeg, 0])
+      .translate([width / 2, height / 2])
+      .precision(0.3);
+  } else {
+    const centerLon = ((centerRaHours * 15) % 360 + 360) % 360;
+    // Rotate so celestial [raDeg, decDeg] mapped to [-raDeg, decDeg] is centered at [0, 0]
+    proj
+      .rotate([centerLon, -centerDecDeg, 0])
+      .translate([width / 2, height / 2])
+      .precision(0.3);
+  }
 
   if (mirrorHorizontal || mirrorVertical) {
     const rawStream = proj.stream;
@@ -436,6 +588,15 @@ export function buildFchart3CliCommand(
     `-projection ${config.projection}`,
   ];
 
+  if (config.coordinateSystem === 'horizontal') {
+    flags.push(`--coord-system horizontal`);
+    flags.push(`--az ${config.centerAzDeg.toFixed(1)}`);
+    flags.push(`--alt ${config.centerAltDeg.toFixed(1)}`);
+    flags.push(`--lat ${config.observerLatDeg.toFixed(4)} --lon ${config.observerLonDeg.toFixed(4)}`);
+    flags.push(`--datetime "${config.observationDateTime}"`);
+    if (config.showHorizonGround) flags.push(`--show-horizon-ground`);
+  }
+  if (config.showCenterCrosshair) flags.push(`--show-crosshair`);
   if (config.showMilkyWayContours) flags.push(`--show-enhanced-milky-way`);
   if (config.showConstellationBoundaries) flags.push(`--show-constellation-borders`);
   if (config.showConstellationLines) flags.push(`--show-constellation-shapes`);
@@ -906,6 +1067,21 @@ function renderVectorChartPageOnPdf(
       }
     }
   });
+
+  // 6B. Optional Center Crosshair (중심 십자선)
+  if (config.showCenterCrosshair) {
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    if (isDark) doc.setDrawColor(34, 211, 238);
+    else if (isNight) doc.setDrawColor(239, 68, 68);
+    else doc.setDrawColor(15, 23, 42);
+    doc.setLineWidth(0.28);
+    doc.line(cx - 4.5, cy, cx - 1.2, cy);
+    doc.line(cx + 1.2, cy, cx + 4.5, cy);
+    doc.line(cx, cy - 4.5, cx, cy - 1.2);
+    doc.line(cx, cy + 1.2, cx, cy + 4.5);
+    doc.circle(cx, cy, 1.8, 'S');
+  }
 
   // 7. Outer Border & Adjacent Sheet Navigation Pointers
   if (isDark) doc.setDrawColor(71, 85, 105);

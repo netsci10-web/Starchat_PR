@@ -18,7 +18,11 @@ import {
 } from './types/astronomy';
 import {
   ATLAS_PRESETS,
+  computeLstDeg,
+  equatorialToHorizontal,
   exportMultiPageAtlasPdf,
+  formatAltDeg,
+  formatAzDeg,
   formatDecDeg,
   formatRaHours,
   generateAtlasSheets,
@@ -31,8 +35,17 @@ export default function App() {
 
   // Default fchart3 Interactive Vector Star Chart Configuration (Orion / Winter Milky Way view)
   const [config, setConfig] = useState<FChart3Config>({
+    coordinateSystem: 'equatorial',
     centerRaHours: 5.588,
     centerDecDeg: -2.0,
+    centerAzDeg: 180.0,
+    centerAltDeg: 50.0,
+    observerLatDeg: 37.5665,
+    observerLonDeg: 126.9780,
+    observerLocationName: '서울 (Seoul)',
+    observationDateTime: '2026-11-16T23:00',
+    showHorizonGround: true,
+    showCenterCrosshair: true,
     fovDeg: 32,
     projection: 'stereographic',
     colorScheme: 'observatory',
@@ -106,14 +119,25 @@ export default function App() {
   // Select a partitioned sheet from fchart3-atlas and jump to it in the D3 chart
   const handleSelectSheet = (sheet: AtlasSheet) => {
     setActiveSheetNumber(sheet.sheetNumber);
-    setConfig((prev) => ({
-      ...prev,
-      centerRaHours: sheet.centerRaHours,
-      centerDecDeg: sheet.centerDecDeg,
-      fovDeg: sheet.fovDeg,
-      limitStarMag: sheet.limitStarMag,
-      limitDsoMag: sheet.limitDsoMag,
-    }));
+    setConfig((prev) => {
+      const lstDeg = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
+      const [az, alt] = equatorialToHorizontal(
+        sheet.centerRaHours * 15,
+        sheet.centerDecDeg,
+        prev.observerLatDeg,
+        lstDeg
+      );
+      return {
+        ...prev,
+        centerRaHours: sheet.centerRaHours,
+        centerDecDeg: sheet.centerDecDeg,
+        centerAzDeg: Number(az.toFixed(1)),
+        centerAltDeg: Number(alt.toFixed(1)),
+        fovDeg: sheet.fovDeg,
+        limitStarMag: sheet.limitStarMag,
+        limitDsoMag: sheet.limitDsoMag,
+      };
+    });
     setActiveTab('chart');
   };
 
@@ -251,11 +275,13 @@ export default function App() {
         <div className="px-6 py-2 bg-slate-100 dark:bg-slate-900/70 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
           <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-              ● VECTOR ENGINE NOMINAL
+              ● {config.coordinateSystem === 'horizontal' ? 'HORIZONTAL (ALT-AZ)' : 'EQUATORIAL (J2000)'}
             </span>
             <span aria-hidden="true">·</span>
             <span>
-              CENTER: {formatRaHours(config.centerRaHours)} / {formatDecDeg(config.centerDecDeg)}
+              {config.coordinateSystem === 'horizontal'
+                ? `CENTER: Az ${formatAzDeg(config.centerAzDeg)} / Alt ${formatAltDeg(config.centerAltDeg)} (${config.observerLocationName})`
+                : `CENTER: ${formatRaHours(config.centerRaHours)} / ${formatDecDeg(config.centerDecDeg)}`}
             </span>
             <span aria-hidden="true">·</span>
             <span>FOV: {config.fovDeg.toFixed(1)}°</span>
@@ -370,18 +396,29 @@ export default function App() {
                   if (dso) {
                     setSelectedObject({ type: 'dso', data: dso });
                   }
-                  setConfig((prev) => ({
-                    ...prev,
-                    showMessierObjects: dso?.messierId ? true : prev.showMessierObjects,
-                    showCaldwellObjects: dso?.caldwellId ? true : prev.showCaldwellObjects,
-                    showConstellationLines: true,
-                    limitDsoMag: dso
-                      ? Math.max(prev.limitDsoMag, Number((dso.mag + 0.5).toFixed(1)))
-                      : prev.limitDsoMag,
-                    centerRaHours: raHours,
-                    centerDecDeg: decDeg,
-                    fovDeg,
-                  }));
+                  setConfig((prev) => {
+                    const lstDeg = computeLstDeg(prev.observationDateTime, prev.observerLonDeg);
+                    const [az, alt] = equatorialToHorizontal(
+                      raHours * 15,
+                      decDeg,
+                      prev.observerLatDeg,
+                      lstDeg
+                    );
+                    return {
+                      ...prev,
+                      showMessierObjects: dso?.messierId ? true : prev.showMessierObjects,
+                      showCaldwellObjects: dso?.caldwellId ? true : prev.showCaldwellObjects,
+                      showConstellationLines: true,
+                      limitDsoMag: dso
+                        ? Math.max(prev.limitDsoMag, Number((dso.mag + 0.5).toFixed(1)))
+                        : prev.limitDsoMag,
+                      centerRaHours: raHours,
+                      centerDecDeg: decDeg,
+                      centerAzDeg: Number(az.toFixed(1)),
+                      centerAltDeg: Number(alt.toFixed(1)),
+                      fovDeg,
+                    };
+                  });
                   setActiveTab('chart');
                 }}
               />

@@ -78,11 +78,23 @@ export interface DSORecord {
   contourPolygons?: Array<Array<[number, number]>>;
 }
 
+export type CoordinateSystemMode = 'equatorial' | 'horizontal';
+
 export interface FChart3Config {
-  // Center & View
+  // Coordinate System & Observer Time/Location
+  coordinateSystem: CoordinateSystemMode; // 'equatorial' (J2000 RA/Dec) or 'horizontal' (Alt-Az)
   centerRaHours: number; // 0 - 24h
   centerDecDeg: number; // -90 to +90 deg
-  fovDeg: number; // Field of view in degrees (e.g. 5 to 140)
+  centerAzDeg: number; // 0 - 360 deg (0=N, 90=E, 180=S, 270=W)
+  centerAltDeg: number; // -90 to +90 deg
+  observerLatDeg: number; // -90 to +90 deg (North positive)
+  observerLonDeg: number; // -180 to +180 deg (East positive)
+  observerLocationName: string;
+  observationDateTime: string; // YYYY-MM-DDTHH:mm local time
+  showHorizonGround: boolean; // Show ground mask & horizon line in Horizontal mode
+
+  // View & Optics
+  fovDeg: number; // Field of view in degrees (1.0 to 140)
   projection: ProjectionMode;
   colorScheme: ChartColorScheme;
   mirrorHorizontal: boolean; // Mirror for diagonal prism / Newtonian views
@@ -94,6 +106,7 @@ export interface FChart3Config {
   starScaleFactor: number; // Magnitude disc sizing multiplier (0.7 to 1.5)
 
   // Vector Layer Toggles
+  showCenterCrosshair: boolean; // Center crosshair reticle (+)
   showMilkyWayContours: boolean; // Enhanced Milky Way isophote contours
   milkyWayStyle: 'isophote_contour' | 'shaded_vector' | 'stippled';
   showConstellationLines: boolean; // Stick figures
@@ -101,7 +114,7 @@ export interface FChart3Config {
   showNebulaOutlines: boolean; // Extended vector polygons for nebulae & galaxies
   showMessierObjects: boolean; // Messier Catalog (M1 - M110)
   showCaldwellObjects: boolean; // Caldwell Catalog (C1 - C109)
-  showEquatorialGrid: boolean; // J2000 RA/Dec graticule
+  showEquatorialGrid: boolean; // J2000 RA/Dec or Alt-Az graticule
   showEclipticAndGalactic: boolean; // Ecliptic & Galactic Equator
   showStarLabels: 'all_named' | 'bayer_and_named' | 'bright_only' | 'none';
   showDsoLabels: boolean;
