@@ -6,6 +6,16 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: './',
+    build: {
+      rollupOptions: {
+        output: {
+          entryFileNames: 'assets/app.js',
+          chunkFileNames: 'assets/[name].js',
+          assetFileNames: 'assets/[name].[ext]',
+        },
+      },
+    },
     plugins: [
       react(),
       tailwindcss(),
@@ -24,6 +34,17 @@ export default defineConfig(() => {
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+          }
+          if (fs.existsSync(distDir)) {
+            // Ensure .nojekyll and 404.html exist for GitHub Pages
+            fs.writeFileSync(path.resolve(distDir, '.nojekyll'), '');
+            const indexHtml = path.resolve(distDir, 'index.html');
+            if (fs.existsSync(indexHtml)) {
+              fs.copyFileSync(indexHtml, path.resolve(distDir, '404.html'));
+            }
+            // Mirror dist/ into docs/ so GitHub Pages works from / (root), /docs, or GitHub Actions
+            const docsDir = path.resolve(__dirname, 'docs');
+            fs.cpSync(distDir, docsDir, {recursive: true, force: true});
           }
         },
       },
