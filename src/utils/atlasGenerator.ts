@@ -281,8 +281,21 @@ export function createCelestialProjection(
   }
 
   if (mirrorHorizontal || mirrorVertical) {
-    const rawStream = proj.stream;
-    proj.stream = function (output) {
+    const rawStream = proj.stream.bind(proj);
+    const rawInvert = proj.invert ? proj.invert.bind(proj) : undefined;
+
+    const mirroredProj = ((point: [number, number]): [number, number] | null => {
+      const pt = proj(point);
+      if (!pt) return null;
+      return [
+        mirrorHorizontal ? width - pt[0] : pt[0],
+        mirrorVertical ? height - pt[1] : pt[1],
+      ];
+    }) as d3.GeoProjection;
+
+    Object.assign(mirroredProj, proj);
+
+    mirroredProj.stream = function (output) {
       return rawStream({
         point(x, y) {
           const mx = mirrorHorizontal ? width - x : x;
@@ -306,6 +319,16 @@ export function createCelestialProjection(
         },
       });
     };
+
+    if (rawInvert) {
+      mirroredProj.invert = function (point: [number, number]): [number, number] | null {
+        const ux = mirrorHorizontal ? width - point[0] : point[0];
+        const uy = mirrorVertical ? height - point[1] : point[1];
+        return rawInvert([ux, uy]);
+      };
+    }
+
+    return mirroredProj;
   }
 
   return proj;
@@ -835,7 +858,7 @@ function renderVectorChartPageOnPdf(
 
     // Parallels of Declination
     for (let dec = -80; dec <= 80; dec += decStep) {
-      if (Math.abs(dec - sheet.centerDecDeg) > sheet.fovDeg * 0.9) continue;
+      if (Math.abs(dec - sheet.centerDecDeg) > Math.max(85, sheet.fovDeg * 2.2)) continue;
       const line: Array<[number, number]> = [];
       for (let ra = 0; ra <= 360; ra += 4) {
         line.push([ra, dec]);
@@ -869,7 +892,7 @@ function renderVectorChartPageOnPdf(
           con.raCenterHours * 15,
           con.decCenterDeg
         ) <=
-        sheet.fovDeg * 0.95 + 25
+        Math.min(180, sheet.fovDeg * 2.4 + 35)
       ) {
         drawProjectedRingOnPdf(doc, proj, con.boundaryPolygon, box, true);
       }
@@ -917,7 +940,7 @@ function renderVectorChartPageOnPdf(
       if (d.mag > sheet.limitDsoMag) return false;
       if (
         angularDistanceDeg(sheet.centerRaDeg, sheet.centerDecDeg, d.raDeg, d.decDeg) >
-        sheet.fovDeg * 0.8
+        Math.min(180, sheet.fovDeg * 2.4 + 25)
       ) {
         return false;
       }

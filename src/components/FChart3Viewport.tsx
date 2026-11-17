@@ -7,6 +7,8 @@ import {
   Download,
   FastForward,
   FileDown,
+  FlipHorizontal,
+  FlipVertical,
   Pause,
   Play,
   Rewind,
@@ -204,21 +206,34 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     config.centerDecDeg,
   ]);
 
-  // Visible Stars for current field of view and limiting magnitude
+  // Diagonal aspect ratio factor from center to viewport corner so stars/DSOs fill the entire screen
+  const aspectDiagonalFactor = useMemo(() => {
+    const minDim = Math.max(1, Math.min(width, height));
+    return Math.max(2.6, Math.hypot(width, height) / minDim);
+  }, [width, height]);
+
+  // Visible Stars for current field of view and limiting magnitude across the entire viewport
   const visibleStars = useMemo(() => {
     const [centerRaDeg, centerDecDeg] = effectiveEqCenter;
     return getVisibleStars(
       centerRaDeg,
       centerDecDeg,
       config.fovDeg,
-      config.limitStarMag
+      config.limitStarMag,
+      aspectDiagonalFactor
     ).sort((a, b) => b.mag - a.mag); // Faint stars first, bright stars on top
-  }, [effectiveEqCenter, config.fovDeg, config.limitStarMag]);
+  }, [effectiveEqCenter, config.fovDeg, config.limitStarMag, aspectDiagonalFactor]);
 
-  // Visible Deep-Sky Objects (Messier, Caldwell, and Extended Nebulae)
+  // Visible Deep-Sky Objects (Messier, Caldwell, and Extended Nebulae) across the entire viewport
   const visibleDsos = useMemo(() => {
     const [centerRaDeg, centerDecDeg] = effectiveEqCenter;
-    const maxAngle = Math.min(180, config.fovDeg * 0.85 + 15);
+    const fovRad = (Math.max(1.0, Math.min(165, config.fovDeg)) * Math.PI) / 180;
+    const stereographicCornerDeg =
+      ((2 * Math.atan(2 * aspectDiagonalFactor * Math.tan(fovRad / 4))) * 180) / Math.PI;
+    const maxAngle = Math.min(
+      180,
+      Math.max(config.fovDeg * aspectDiagonalFactor + 24, stereographicCornerDeg + 20)
+    );
     return DSO_CATALOG.filter((d) => {
       const isSelected = selectedObject?.type === 'dso' && selectedObject.data.id === d.id;
       if (!isSelected && d.mag > config.limitDsoMag) return false;
@@ -238,11 +253,13 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
     config.showCaldwellObjects,
     config.showNebulaOutlines,
     selectedObject,
+    aspectDiagonalFactor,
   ]);
 
   // Precompute Coordinate Graticule Lines (Equatorial RA/Dec OR Horizontal Alt/Az)
   const graticuleLines = useMemo(() => {
     if (!config.showEquatorialGrid) return { parallels: [], meridians: [] };
+    const gridReachDeg = Math.max(85, config.fovDeg * aspectDiagonalFactor + 20);
 
     if (isHorizontal) {
       const altStep =
@@ -273,8 +290,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
         labelPt: [number, number] | null;
       }> = [];
 
-      const altMin = Math.max(-85, Math.floor((config.centerAltDeg - config.fovDeg) / altStep) * altStep);
-      const altMax = Math.min(85, Math.ceil((config.centerAltDeg + config.fovDeg) / altStep) * altStep);
+      const altMin = Math.max(-85, Math.floor((config.centerAltDeg - gridReachDeg) / altStep) * altStep);
+      const altMax = Math.min(85, Math.ceil((config.centerAltDeg + gridReachDeg) / altStep) * altStep);
 
       for (let alt = altMin; alt <= altMax; alt = Number((alt + altStep).toFixed(2))) {
         const coords: Array<[number, number]> = [];
@@ -345,8 +362,8 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
       labelPt: [number, number] | null;
     }> = [];
 
-    const decMin = Math.max(-85, Math.floor((config.centerDecDeg - config.fovDeg) / decStep) * decStep);
-    const decMax = Math.min(85, Math.ceil((config.centerDecDeg + config.fovDeg) / decStep) * decStep);
+    const decMin = Math.max(-85, Math.floor((config.centerDecDeg - gridReachDeg) / decStep) * decStep);
+    const decMax = Math.min(85, Math.ceil((config.centerDecDeg + gridReachDeg) / decStep) * decStep);
 
     for (let dec = decMin; dec <= decMax; dec = Number((dec + decStep).toFixed(2))) {
       const coords: Array<[number, number]> = [];
@@ -1130,8 +1147,125 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
           )}
         </div>
 
-        {/* Right: Crosshair toggle, Ground toggle (if horizontal), Zoom, Reset, SVG Vector & Single PDF Export Buttons */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Right: 1-line Center Coordinates (left of Crosshair), Crosshair, Ground, Finder Ring, 1-line Optical Mirror (left of Zoom), Zoom, Reset, SVG & PDF */}
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+          {/* Center Coordinates Input on 1 Single Line (십자선 왼쪽 1줄 배치) */}
+          {isHorizontal ? (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                중심 방위각 Az
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={360}
+                step={5}
+                value={config.centerAzDeg}
+                onChange={(e) => {
+                  const nextAz = ((Number(e.target.value) % 360) + 360) % 360;
+                  const [raDeg, decDeg] = horizontalToEquatorial(
+                    nextAz,
+                    config.centerAltDeg,
+                    config.observerLatDeg,
+                    lstDeg
+                  );
+                  onChangeConfig((prev) => ({
+                    ...prev,
+                    centerAzDeg: nextAz,
+                    centerRaHours: Number((raDeg / 15).toFixed(3)),
+                    centerDecDeg: Number(decDeg.toFixed(2)),
+                  }));
+                }}
+                className="w-16 px-1.5 py-0.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                title="중심 방위각 Az (0~360°)"
+              />
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap ml-0.5">
+                중심 고도 Alt
+              </span>
+              <input
+                type="number"
+                min={-90}
+                max={90}
+                step={2}
+                value={config.centerAltDeg}
+                onChange={(e) => {
+                  const nextAlt = Math.max(-89.5, Math.min(89.5, Number(e.target.value)));
+                  const [raDeg, decDeg] = horizontalToEquatorial(
+                    config.centerAzDeg,
+                    nextAlt,
+                    config.observerLatDeg,
+                    lstDeg
+                  );
+                  onChangeConfig((prev) => ({
+                    ...prev,
+                    centerAltDeg: nextAlt,
+                    centerRaHours: Number((raDeg / 15).toFixed(3)),
+                    centerDecDeg: Number(decDeg.toFixed(2)),
+                  }));
+                }}
+                className="w-16 px-1.5 py-0.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                title="중심 고도 Alt (-90~+90°)"
+              />
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                중심 적경 RA (0~24h)
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={24}
+                step={0.25}
+                value={config.centerRaHours}
+                onChange={(e) => {
+                  const nextRa = ((Number(e.target.value) % 24) + 24) % 24;
+                  const [az, alt] = equatorialToHorizontal(
+                    nextRa * 15,
+                    config.centerDecDeg,
+                    config.observerLatDeg,
+                    lstDeg
+                  );
+                  onChangeConfig((prev) => ({
+                    ...prev,
+                    centerRaHours: nextRa,
+                    centerAzDeg: Number(az.toFixed(1)),
+                    centerAltDeg: Number(alt.toFixed(1)),
+                  }));
+                }}
+                className="w-18 px-1.5 py-0.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                title="중심 적경 RA (0~24h)"
+              />
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap ml-0.5">
+                중심 적위 Dec (-90~+90°)
+              </span>
+              <input
+                type="number"
+                min={-90}
+                max={90}
+                step={2}
+                value={config.centerDecDeg}
+                onChange={(e) => {
+                  const nextDec = Math.max(-89.5, Math.min(89.5, Number(e.target.value)));
+                  const [az, alt] = equatorialToHorizontal(
+                    config.centerRaHours * 15,
+                    nextDec,
+                    config.observerLatDeg,
+                    lstDeg
+                  );
+                  onChangeConfig((prev) => ({
+                    ...prev,
+                    centerDecDeg: nextDec,
+                    centerAzDeg: Number(az.toFixed(1)),
+                    centerAltDeg: Number(alt.toFixed(1)),
+                  }));
+                }}
+                className="w-16 px-1.5 py-0.5 text-xs font-mono tabular-nums rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                title="중심 적위 Dec (-90~+90°)"
+              />
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() =>
@@ -1172,7 +1306,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
             </button>
           )}
 
-          {/* Finder FOV Ring (파인더 시야 링) next to Zoom In / Out */}
+          {/* Finder FOV Ring (파인더 시야 링) */}
           <div className="flex items-center gap-1.5 px-2 py-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70">
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
               파인더 시야 링
@@ -1218,6 +1352,49 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                 </span>
               </div>
             )}
+          </div>
+
+          {/* Optical Mirror Controls on 1 Single Line (확대/축소 왼쪽 1줄 배치) */}
+          <div className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70">
+            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap mr-0.5">
+              광학계 상 반전
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                onChangeConfig((p) => ({
+                  ...p,
+                  mirrorHorizontal: !p.mirrorHorizontal,
+                }))
+              }
+              className={`px-2 py-0.5 rounded text-xs font-medium border flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer ${
+                config.mirrorHorizontal
+                  ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-950/60 text-cyan-600 dark:text-cyan-400 font-semibold'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title="천정미러용 좌우 반전 (Mirror Horizontal)"
+            >
+              <FlipHorizontal className="w-3.5 h-3.5" />
+              <span>좌우 반전</span>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onChangeConfig((p) => ({
+                  ...p,
+                  mirrorVertical: !p.mirrorVertical,
+                }))
+              }
+              className={`px-2 py-0.5 rounded text-xs font-medium border flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer ${
+                config.mirrorVertical
+                  ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-950/60 text-cyan-600 dark:text-cyan-400 font-semibold'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title="직초점/뉴턴식 상하 반전 (Mirror Vertical)"
+            >
+              <FlipVertical className="w-3.5 h-3.5" />
+              <span>상하 반전</span>
+            </button>
           </div>
 
           <button
@@ -1762,7 +1939,10 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                               <ellipse
                                 rx={radiusPx}
                                 ry={minorPx}
-                                transform={`rotate(${dso.positionAngleDeg - 90})`}
+                                transform={`rotate(${
+                                  (config.mirrorHorizontal !== config.mirrorVertical ? -1 : 1) *
+                                  (dso.positionAngleDeg - 90)
+                                })`}
                                 fill={palette.galaxyFill}
                                 stroke={palette.galaxyStroke}
                                 strokeWidth="1.3"
@@ -2019,7 +2199,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                       />
                       <rect
                         x={cp.major ? -24 : -22}
-                        y={8}
+                        y={config.mirrorVertical ? -26 : 8}
                         width={cp.major ? 48 : 44}
                         height={18}
                         rx="4"
@@ -2029,7 +2209,7 @@ export const FChart3Viewport: React.FC<FChart3ViewportProps> = ({
                       />
                       <text
                         x={0}
-                        y={20}
+                        y={config.mirrorVertical ? -14 : 20}
                         textAnchor="middle"
                         fill={palette.cardinalText}
                         fontSize={cp.major ? '10.5' : '9.5'}

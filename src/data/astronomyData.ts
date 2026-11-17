@@ -509,18 +509,18 @@ export function getAllProceduralStars(): StarRecord[] {
 
   const list: StarRecord[] = [];
   const rng = seededRandom(20261116);
-  const totalCount = 9600;
+  const totalCount = 16000;
 
   for (let i = 0; i < totalCount; i++) {
     let raDeg: number;
     let decDeg: number;
 
-    if (rng() < 0.42) {
+    if (rng() < 0.36) {
       const l = rng() * 360;
       const u1 = Math.max(0.0001, rng());
       const u2 = rng();
       const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-      const b = Math.max(-28, Math.min(28, z * 8.5));
+      const b = Math.max(-32, Math.min(32, z * 9.5));
       [raDeg, decDeg] = galacticToEquatorial(l, b);
     } else {
       raDeg = rng() * 360;
@@ -530,7 +530,7 @@ export function getAllProceduralStars(): StarRecord[] {
 
     const u = rng();
     // Distribute stars smoothly from mag 4.1 up to mag 14.0
-    const mag = Number((4.1 + Math.pow(u, 0.46) * 9.9).toFixed(2));
+    const mag = Number((4.1 + Math.pow(u, 0.48) * 9.9).toFixed(2));
     const bv = Number((-0.2 + Math.pow(rng(), 1.3) * 1.75).toFixed(2));
     const isDouble = mag < 7.5 && rng() < 0.045;
 
@@ -553,18 +553,28 @@ export function getAllProceduralStars(): StarRecord[] {
 
 /**
  * Generate deterministic deep-field stars (mag 10.5 .. 14.0) for sky tiles around the current center
- * when zooming in or using deep limiting magnitudes (up to 14.0).
+ * when zooming in or using deep limiting magnitudes (up to 14.0), covering the full widescreen viewport.
  */
 function getDeepFieldTileStars(
   centerRaDeg: number,
   centerDecDeg: number,
   fovDeg: number,
-  limitStarMag: number
+  limitStarMag: number,
+  maxRadiusDeg: number
 ): StarRecord[] {
   if (limitStarMag <= 10.5) return [];
 
-  const tileSizeDeg = fovDeg <= 8 ? 1.0 : fovDeg <= 20 ? 2.0 : 4.0;
-  const maxRadius = Math.min(45, fovDeg * 0.75 + tileSizeDeg);
+  const tileSizeDeg =
+    fovDeg <= 6
+      ? 1.0
+      : fovDeg <= 15
+      ? 2.0
+      : fovDeg <= 30
+      ? 4.0
+      : fovDeg <= 60
+      ? 6.0
+      : 10.0;
+  const maxRadius = Math.min(130, Math.max(maxRadiusDeg, fovDeg * 2.2 + tileSizeDeg));
   const minDec = Math.max(-89, centerDecDeg - maxRadius);
   const maxDec = Math.min(89, centerDecDeg + maxRadius);
 
@@ -574,7 +584,8 @@ function getDeepFieldTileStars(
 
   // Scale stars per tile by how deep past mag 10.5 the user has set (up to 14.0)
   const depthFraction = Math.min(1, (limitStarMag - 10.5) / 3.5);
-  const starsPerTile = Math.max(2, Math.round(depthFraction * 18));
+  const basePerTile = fovDeg <= 15 ? 14 : fovDeg <= 35 ? 8 : 5;
+  const starsPerTile = Math.max(2, Math.round(depthFraction * basePerTile));
 
   const deepStars: StarRecord[] = [];
 
@@ -614,10 +625,7 @@ function getDeepFieldTileStars(
           isProcedural: true,
         });
       }
-
-      if (deepStars.length >= 1400) break;
     }
-    if (deepStars.length >= 1400) break;
   }
 
   return deepStars;
@@ -645,15 +653,24 @@ export function angularDistanceDeg(
 }
 
 /**
- * Query visible stars for a given center (RA/Dec), FOV, and limiting magnitude (up to 14.0)
+ * Query visible stars for a given center (RA/Dec), FOV, and limiting magnitude (up to 14.0).
+ * Accounts for wide aspect ratios and stereographic corner reach so stars fill the entire viewport.
  */
 export function getVisibleStars(
   centerRaDeg: number,
   centerDecDeg: number,
   fovDeg: number,
-  limitStarMag: number
+  limitStarMag: number,
+  aspectDiagonalFactor = 2.6
 ): StarRecord[] {
-  const maxRadius = Math.min(180, fovDeg * 0.85 + 12);
+  const fovRad = (Math.max(1.0, Math.min(165, fovDeg)) * Math.PI) / 180;
+  const stereographicCornerDeg =
+    ((2 * Math.atan(2 * aspectDiagonalFactor * Math.tan(fovRad / 4))) * 180) / Math.PI;
+  const maxRadius = Math.min(
+    180,
+    Math.max(fovDeg * aspectDiagonalFactor + 20, stereographicCornerDeg + 16)
+  );
+
   const bright = BRIGHT_STARS.filter(
     (st) =>
       st.mag <= limitStarMag &&
@@ -672,8 +689,8 @@ export function getVisibleStars(
   );
 
   const deepTileStars =
-    limitStarMag > 10.5 && fovDeg <= 50
-      ? getDeepFieldTileStars(centerRaDeg, centerDecDeg, fovDeg, limitStarMag)
+    limitStarMag > 10.5 && fovDeg <= 65
+      ? getDeepFieldTileStars(centerRaDeg, centerDecDeg, fovDeg, limitStarMag, maxRadius)
       : [];
 
   return [...bright, ...proc, ...deepTileStars];
