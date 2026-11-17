@@ -1,19 +1,9 @@
 import { ConstellationStick, StarRecord } from '../types/astronomy';
 
 /**
- * Shortest-path RA interpolation (in hours) handling the 0h/24h wrap-around cleanly.
- */
-function interpolateRaHours(ra1H: number, ra2H: number, t: number): number {
-  let diff = ra2H - ra1H;
-  if (diff > 12) diff -= 24;
-  if (diff < -12) diff += 24;
-  return (((ra1H + diff * t) % 24) + 24) % 24;
-}
-
-/**
  * Subdivide a celestial line segment [[ra1Deg, dec1Deg], [ra2Deg, dec2Deg]]
- * into a multi-point array of [raDeg, decDeg] points so D3 projections and jsPDF
- * never drop or clip long constellation lines when one star endpoint goes off-screen.
+ * along a true spherical Great Circle (3D unit-vector Slerp) so D3 projections
+ * and jsPDF never bend circumpolar lines (e.g. Polaris -> Yildun) into arcs.
  */
 export function subdivideStickSegment(
   p1: [number, number],
@@ -22,14 +12,55 @@ export function subdivideStickSegment(
 ): Array<[number, number]> {
   const [ra1Deg, dec1] = p1;
   const [ra2Deg, dec2] = p2;
-  const ra1H = ra1Deg / 15;
-  const ra2H = ra2Deg / 15;
+  const r1 = (ra1Deg * Math.PI) / 180;
+  const d1 = (dec1 * Math.PI) / 180;
+  const r2 = (ra2Deg * Math.PI) / 180;
+  const d2 = (dec2 * Math.PI) / 180;
+
+  const v1x = Math.cos(d1) * Math.cos(r1);
+  const v1y = Math.cos(d1) * Math.sin(r1);
+  const v1z = Math.sin(d1);
+
+  const v2x = Math.cos(d2) * Math.cos(r2);
+  const v2y = Math.cos(d2) * Math.sin(r2);
+  const v2z = Math.sin(d2);
+
+  const dot = Math.max(-1, Math.min(1, v1x * v2x + v1y * v2y + v1z * v2z));
+  const omega = Math.acos(dot);
+  const sinOmega = Math.sin(omega);
+
   const pts: Array<[number, number]> = [];
   for (let i = 0; i <= steps; i++) {
+    if (i === 0) {
+      pts.push([Number((((ra1Deg % 360) + 360) % 360).toFixed(4)), Number(dec1.toFixed(4))]);
+      continue;
+    }
+    if (i === steps) {
+      pts.push([Number((((ra2Deg % 360) + 360) % 360).toFixed(4)), Number(dec2.toFixed(4))]);
+      continue;
+    }
     const t = i / steps;
-    const raH = interpolateRaHours(ra1H, ra2H, t);
-    const dec = dec1 + (dec2 - dec1) * t;
-    pts.push([Number((raH * 15).toFixed(4)), Number(dec.toFixed(4))]);
+    let x: number;
+    let y: number;
+    let z: number;
+    if (omega < 1e-6 || sinOmega < 1e-6) {
+      x = v1x * (1 - t) + v2x * t;
+      y = v1y * (1 - t) + v2y * t;
+      z = v1z * (1 - t) + v2z * t;
+    } else {
+      const w1 = Math.sin((1 - t) * omega) / sinOmega;
+      const w2 = Math.sin(t * omega) / sinOmega;
+      x = w1 * v1x + w2 * v2x;
+      y = w1 * v1y + w2 * v2y;
+      z = w1 * v1z + w2 * v2z;
+    }
+    const len = Math.hypot(x, y, z) || 1;
+    const decOut = (Math.asin(Math.max(-1, Math.min(1, z / len))) * 180) / Math.PI;
+    const raOut = (((Math.atan2(y, x) * 180) / Math.PI) % 360 + 360) % 360;
+    pts.push([
+      Number(raOut.toFixed(4)),
+      Number(Math.max(-89.99, Math.min(89.99, decOut)).toFixed(4)),
+    ]);
   }
   return pts;
 }
@@ -74,6 +105,35 @@ export function buildEquatorialBoundaryBox(
 }
 
 /**
+ * Build a multi-vertex stepped IAU boundary polygon (sampling along constant Dec parallels
+ * and constant RA meridians cleanly across the 0h/24h wrap-around).
+ */
+function buildSteppedEquatorialBoundary(
+  vertices: Array<[number, number]>
+): Array<[number, number]> {
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i < vertices.length; i++) {
+    const [ra1, dec1] = vertices[i];
+    const [ra2, dec2] = vertices[(i + 1) % vertices.length];
+    let dRa = ra2 - ra1;
+    if (dRa > 12) dRa -= 24;
+    if (dRa < -12) dRa += 24;
+    const dDec = dec2 - dec1;
+    const steps = Math.max(2, Math.ceil(Math.max(Math.abs(dRa) / 0.25, Math.abs(dDec) / 1.5)));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      const raH = (((ra1 + dRa * t) % 24) + 24) % 24;
+      const decD = dec1 + dDec * t;
+      pts.push([Number((raH * 15).toFixed(3)), Number(decD.toFixed(3))]);
+    }
+  }
+  if (pts.length > 0) {
+    pts.push([...pts[0]]);
+  }
+  return pts;
+}
+
+/**
  * Compact helper to define a constellation from polylines of [raHours, decDeg] star vertices.
  * Every polyline `[v0, v1, v2, ...]` is expanded into pairs `[v0, v1], [v1, v2], ...`
  * AND every vertex is automatically registered in `CONSTELLATION_VERTEX_STARS` so
@@ -87,6 +147,7 @@ interface RawConstellationDef {
   decCenterDeg: number;
   chains: Array<Array<[number, number]>>; // Each chain is an array of [raHours, decDeg]
   box?: [number, number, number, number]; // [raMinH, raMaxH, decMinDeg, decMaxDeg]
+  boundary?: Array<[number, number]>; // Optional stepped IAU boundary vertices [raHours, decDeg]
 }
 
 const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
@@ -349,7 +410,7 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
       [[21.310, 62.585], [21.478, 70.561], [23.656, 77.632], [22.828, 66.200], [22.181, 58.201], [21.310, 62.585]],
       [[21.478, 70.561], [22.828, 66.200]],
     ],
-    box: [20.0, 8.0, 53.5, 88.5],
+    box: [20.0, 8.0, 53.5, 86.4],
   },
   // 21. Cetus (고래자리)
   {
@@ -509,7 +570,8 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 5.1,
     decCenterDeg: -60.0,
     chains: [
-      [[4.267, -51.487], [4.567, -55.045], [5.560, -62.489], [5.744, -65.736], [5.092, -57.473], [4.567, -55.045]],
+      [[4.267, -51.487], [4.567, -55.045], [5.092, -57.473], [5.560, -62.489], [5.744, -65.736]],
+      [[4.567, -55.045], [5.560, -62.489]],
     ],
     box: [3.8, 6.6, -70.0, -48.5],
   },
@@ -626,7 +688,7 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 10.5,
     decCenterDeg: -18.0,
     chains: [
-      [[8.628, 5.704], [8.646, 3.341], [8.726, 3.399], [8.780, 6.419], [8.923, 5.946], [8.628, 5.704]],
+      [[8.628, 5.704], [8.646, 3.341], [8.726, 3.399], [8.923, 5.946], [8.780, 6.419], [8.628, 5.704]],
       [[8.923, 5.946], [9.239, 2.314], [9.460, -8.659], [9.847, -14.847], [10.176, -12.354], [10.493, -16.836], [10.827, -16.194], [11.550, -31.858], [11.883, -33.908], [13.316, -23.172], [14.106, -26.682]],
     ],
     box: [8.1, 15.0, -35.5, 6.8],
@@ -663,7 +725,7 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 22.5,
     decCenterDeg: 46.0,
     chains: [
-      [[22.522, 50.282], [22.409, 52.229], [22.487, 47.707], [22.425, 49.476], [22.350, 46.537], [22.266, 37.749]],
+      [[22.522, 50.282], [22.409, 52.229], [22.425, 49.476], [22.487, 47.707], [22.350, 46.537], [22.266, 37.749]],
     ],
     box: [21.9, 22.9, 35.0, 57.0],
   },
@@ -881,8 +943,8 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     decCenterDeg: 20.0,
     chains: [
       [[0.140, 29.090], [23.063, 28.083], [23.079, 15.205], [0.220, 15.184], [0.140, 29.090]],
-      [[23.063, 28.083], [22.717, 30.221], [22.117, 25.345]],
-      [[23.063, 28.083], [22.833, 24.602], [22.167, 33.179]],
+      [[23.063, 28.083], [22.717, 30.221], [22.167, 33.179]],
+      [[23.063, 28.083], [22.833, 24.602], [22.117, 25.345]],
       [[23.079, 15.205], [22.691, 10.831], [22.170, 6.198], [21.736, 9.875]],
     ],
     box: [21.1, 0.3, 2.0, 36.5],
@@ -909,8 +971,8 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 0.75,
     decCenterDeg: -46.0,
     chains: [
-      [[0.438, -42.306], [0.156, -45.747], [1.102, -46.718], [1.473, -43.318], [0.438, -42.306]],
-      [[1.102, -46.718], [1.140, -55.245], [0.438, -42.306]],
+      [[0.438, -42.306], [1.473, -43.318], [1.102, -46.718], [1.140, -55.245], [0.156, -45.747], [0.438, -42.306]],
+      [[0.438, -42.306], [1.102, -46.718]],
     ],
     box: [23.4, 2.4, -58.0, -39.0],
   },
@@ -934,7 +996,8 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 0.7,
     decCenterDeg: 11.0,
     chains: [
-      [[1.191, 24.584], [1.298, 27.265], [1.191, 24.584], [1.525, 15.346], [1.756, 9.158], [2.034, 2.764], [1.049, 7.890], [0.812, 7.585], [23.989, 6.863], [23.666, 5.626], [23.286, 3.282], [23.031, 3.820], [23.466, 6.380], [23.989, 6.863]],
+      [[1.298, 27.265], [1.191, 24.584], [1.525, 15.346], [1.756, 9.158], [2.034, 2.764], [1.049, 7.890], [0.812, 7.585], [23.989, 6.863]],
+      [[23.989, 6.863], [23.666, 5.626], [23.286, 3.282], [23.031, 3.820], [23.466, 6.380], [23.989, 6.863]],
     ],
     box: [22.9, 2.1, -6.5, 33.5],
   },
@@ -946,7 +1009,7 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 22.3,
     decCenterDeg: -30.5,
     chains: [
-      [[22.961, -29.622], [22.680, -27.044], [22.140, -32.988], [21.746, -33.026], [22.525, -32.346], [22.961, -29.622]],
+      [[22.961, -29.622], [22.680, -27.044], [21.746, -33.026], [22.140, -32.988], [22.525, -32.346], [22.961, -29.622]],
     ],
     box: [21.4, 23.1, -36.5, -25.0],
   },
@@ -958,7 +1021,7 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 7.6,
     decCenterDeg: -33.0,
     chains: [
-      [[6.833, -50.615], [7.286, -37.097], [8.002, -39.993], [8.126, -24.304], [7.822, -24.860], [7.488, -43.301], [6.833, -50.615]],
+      [[6.833, -50.615], [7.286, -37.097], [7.822, -24.860], [8.126, -24.304], [8.002, -39.993], [7.488, -43.301], [6.833, -50.615]],
     ],
     box: [6.0, 8.5, -51.0, -11.5],
   },
@@ -1136,7 +1199,7 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     raCenterHours: 23.8,
     decCenterDeg: -64.0,
     chains: [
-      [[22.280, -60.259], [23.286, -58.236], [23.959, -65.577], [0.525, -62.958], [0.338, -64.875], [22.487, -65.479], [22.280, -60.259]],
+      [[22.280, -60.259], [23.286, -58.236], [0.525, -62.958], [0.338, -64.875], [23.959, -65.577], [22.487, -65.479], [22.280, -60.259]],
     ],
     box: [22.1, 1.4, -75.5, -56.5],
   },
@@ -1167,7 +1230,30 @@ const RAW_88_CONSTELLATIONS: RawConstellationDef[] = [
     chains: [
       [[2.530, 89.264], [17.537, 86.586], [16.766, 82.037], [15.734, 77.794], [14.845, 74.155], [15.345, 71.834], [16.292, 75.755], [15.734, 77.794]],
     ],
-    box: [13.0, 18.0, 65.5, 89.5],
+    boundary: [
+      [13.05, 69.5],
+      [14.25, 69.5],
+      [14.25, 65.8],
+      [16.05, 65.8],
+      [16.05, 69.8],
+      [17.35, 69.8],
+      [17.35, 74.8],
+      [17.90, 74.8],
+      [17.90, 80.0],
+      [18.60, 80.0],
+      [18.60, 85.4],
+      [20.55, 85.4],
+      [20.55, 86.4],
+      [23.50, 86.4],
+      [23.50, 87.3],
+      [1.60, 87.3],
+      [1.60, 86.5],
+      [5.80, 86.5],
+      [5.80, 88.1],
+      [8.50, 88.1],
+      [8.50, 86.7],
+      [13.05, 86.7],
+    ],
   },
   // 85. Vela (돛자리)
   {
@@ -1255,7 +1341,9 @@ export const CONSTELLATION_DATA: ConstellationStick[] = RAW_88_CONSTELLATIONS.ma
     raCenterHours: raw.raCenterHours,
     decCenterDeg: raw.decCenterDeg,
     lines,
-    boundaryPolygon: buildEquatorialBoundaryBox(raMin, raMax, decMin, decMax, 8),
+    boundaryPolygon: raw.boundary
+      ? buildSteppedEquatorialBoundary(raw.boundary)
+      : buildEquatorialBoundaryBox(raMin, raMax, decMin, decMax, 8),
   };
 });
 

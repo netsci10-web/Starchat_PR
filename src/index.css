@@ -31,3 +31,229 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ============================================================================
+   Full Astronomical Red Night-Vision UI Theme (.nightvision-ui)
+   Deep scotopic-safe crimson surfaces with high-contrast red typography and
+   UI icons while keeping chart SVGs & theme swatch circles intact.
+   ============================================================================ */
+.nightvision-ui,
+.nightvision-ui * {
+  color-scheme: dark;
+  accent-color: #dc2626;
+}
+
+/* 1. Deepest backgrounds */
+.nightvision-ui :where(
+  [class*="bg-slate-950"],
+  [class*="bg-[#0B1120]"],
+  [class*="bg-[#070B14]"],
+  [class*="bg-black"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  background-color: #090101 !important;
+}
+
+/* 2. Cards, headers, sidebars, dropdowns, popovers (keep dark crimson, NOT bright red) */
+.nightvision-ui :where(
+  [class*="bg-white"],
+  [class*="bg-slate-900"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]):not([data-nv-bright]) {
+  background-color: #140202 !important;
+}
+
+.nightvision-ui :where(
+  aside[class*="bg-white"],
+  aside[class*="bg-slate-900"],
+  div[class*="bg-slate-900/"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *) {
+  background-color: rgba(20, 2, 2, 0.96) !important;
+}
+
+/* 3. Tracks, nested cards, secondary tiles */
+.nightvision-ui :where(
+  [class*="bg-slate-800"],
+  [class*="bg-slate-700"],
+  [class*="bg-slate-100"],
+  [class~="bg-slate-50"],
+  [class*="bg-slate-50/"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  background-color: #240404 !important;
+}
+
+/* 4. Active segmented tab / pill buttons inside dark tracks */
+.nightvision-ui :where(
+  button[class*="bg-white"][class*="dark:bg-slate-900"],
+  [class*="bg-cyan-950"],
+  [class*="bg-emerald-950"],
+  [class*="bg-amber-950"],
+  [class*="bg-blue-950"],
+  [class*="bg-cyan-50/"],
+  [class~="bg-cyan-50"],
+  [class*="bg-emerald-50/"],
+  [class~="bg-emerald-50"],
+  [class*="bg-amber-50/"],
+  [class~="bg-amber-50"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  background-color: #450909 !important;
+}
+
+/* 5. Solid CTA action buttons & active checkboxes */
+.nightvision-ui :where(
+  [class*="bg-cyan-600"],
+  [class*="bg-cyan-500"],
+  [class*="bg-emerald-600"],
+  [class*="bg-emerald-500"],
+  [class*="bg-amber-600"],
+  [class*="bg-amber-500"],
+  [class*="bg-blue-600"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  background-color: #991b1b !important;
+}
+
+.nightvision-ui :where(
+  [class*="bg-cyan-600"],
+  [class*="bg-cyan-500"],
+  [class*="bg-emerald-600"],
+  [class*="bg-amber-500"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]):hover {
+  background-color: #b91c1c !important;
+}
+
+/* 6. Small bright scale indicators & status dots */
+.nightvision-ui :where(
+  [data-nv-bright="true"],
+  [class*="bg-cyan-400"],
+  [class*="bg-emerald-400"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  background-color: #ef4444 !important;
+}
+
+/* 7. High-contrast foreground typography */
+.nightvision-ui :where(
+  [class*="text-white"],
+  [class*="text-slate-100"],
+  [class*="text-slate-200"],
+  [class*="text-slate-900"],
+  [class*="text-slate-800"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  color: #fecaca !important;
+}
+
+.nightvision-ui :where(
+  [class*="text-slate-300"],
+  [class*="text-slate-400"],
+  [class*="text-slate-500"],
+  [class*="text-slate-600"],
+  [class*="text-slate-700"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  color: #f87171 !important;
+}
+
+.nightvision-ui :where(
+  [class*="text-cyan-"],
+  [class*="text-emerald-"],
+  [class*="text-amber-"],
+  [class*="text-sky-"],
+  [class*="text-blue-"],
+  [class*="text-purple-"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  color: #fca5a5 !important;
+}
+
+.nightvision-ui :where(button, a):hover:not(#fchart3-svg):not([data-theme-swatch]) {
+  color: #fee2e2;
+}
+
+/* Keep solid crimson buttons readable */
+.nightvision-ui :where(
+  [class*="bg-cyan-600"],
+  [class*="bg-emerald-600"],
+  [class*="bg-amber-500"],
+  [class*="bg-red-600"]
+):not(#fchart3-svg):not([data-theme-swatch]) {
+  color: #fee2e2 !important;
+}
+
+/* 8. Turn UI SVG icons (Lucide) red without touching chart SVGs */
+.nightvision-ui svg:not(#fchart3-svg):not([data-chart-svg]) {
+  color: #fca5a5 !important;
+}
+
+/* 9. Borders & rings */
+.nightvision-ui :where(
+  [class*="border-slate-"],
+  [class*="border-cyan-"],
+  [class*="border-emerald-"],
+  [class*="border-amber-"],
+  [class*="border-blue-"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  border-color: #7f1d1d !important;
+}
+
+.nightvision-ui :where(
+  [class*="border-cyan-500"],
+  [class*="border-cyan-400"],
+  [class*="border-emerald-500"],
+  [class*="border-amber-500"]
+):not(#fchart3-svg):not(#fchart3-svg *):not([data-chart-svg]):not([data-chart-svg] *):not([data-theme-swatch]) {
+  border-color: #ef4444 !important;
+}
+
+.nightvision-ui :where([class*="ring-cyan-"], [class*="ring-emerald-"]) {
+  --tw-ring-color: #ef4444 !important;
+}
+
+.nightvision-ui :where([class*="ring-offset-"]):not(#fchart3-svg):not(#fchart3-svg *) {
+  --tw-ring-offset-color: #140202 !important;
+}
+
+/* 10. Inputs, selects, range sliders, images, scrollbars */
+.nightvision-ui input:not([type="range"]),
+.nightvision-ui select,
+.nightvision-ui textarea {
+  color: #fecaca !important;
+  background-color: #1e0303 !important;
+  border-color: #7f1d1d !important;
+}
+
+.nightvision-ui input[type="range"] {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  accent-color: #ef4444;
+}
+
+.nightvision-ui input[type="range"]::-webkit-slider-runnable-track {
+  background: #3b0707;
+  border-radius: 9999px;
+  height: 6px;
+}
+
+.nightvision-ui input[type="range"]::-webkit-slider-thumb {
+  margin-top: -4px;
+}
+
+.nightvision-ui input::placeholder,
+.nightvision-ui textarea::placeholder {
+  color: #b91c1c !important;
+}
+
+.nightvision-ui img {
+  filter: sepia(1) saturate(6.5) hue-rotate(-52deg) brightness(0.78) contrast(1.06);
+}
+
+.nightvision-ui ::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.nightvision-ui ::-webkit-scrollbar-track {
+  background: #0d0202;
+}
+
+.nightvision-ui ::-webkit-scrollbar-thumb {
+  background: #7f1d1d;
+  border-radius: 4px;
+}
+
+.nightvision-ui ::-webkit-scrollbar-thumb:hover {
+  background: #b91c1c;
+}

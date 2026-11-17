@@ -196,9 +196,134 @@ export function formatDecDeg(decDeg: number, compact = false): string {
 }
 
 /**
- * Compute star disc radius in pixels/points using fchart3's magnitude power-law formula.
- * Maximum star radius is half of previous (4.25 * baseSize instead of 8.5 * baseSize),
- * while minimum star radius remains unchanged (0.45 * baseSize).
+ * Format Right Ascension in hours to high-precision "05h 35m 16.8s"
+ */
+export function formatExactRaHms(raHours: number): string {
+  const norm = ((raHours % 24) + 24) % 24;
+  let totalTenthsSec = Math.round(norm * 36000);
+  if (totalTenthsSec >= 24 * 36000) totalTenthsSec -= 24 * 36000;
+  const h = Math.floor(totalTenthsSec / 36000);
+  const remAfterH = totalTenthsSec % 36000;
+  const m = Math.floor(remAfterH / 600);
+  const s = (remAfterH % 600) / 10;
+  return `${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m ${s
+    .toFixed(1)
+    .padStart(4, '0')}s`;
+}
+
+/**
+ * Format Declination in degrees to high-precision "-02° 00′ 00″"
+ */
+export function formatExactDecDms(decDeg: number): string {
+  const sign = decDeg >= 0 ? '+' : '-';
+  let totalArcsec = Math.round(Math.abs(decDeg) * 3600);
+  if (totalArcsec > 90 * 3600) totalArcsec = 90 * 3600;
+  const d = Math.floor(totalArcsec / 3600);
+  const remAfterD = totalArcsec % 3600;
+  const m = Math.floor(remAfterD / 60);
+  const s = remAfterD % 60;
+  return `${sign}${String(d).padStart(2, '0')}° ${String(m).padStart(
+    2,
+    '0'
+  )}′ ${String(s).padStart(2, '0')}″`;
+}
+
+/**
+ * Compute linked Star & DSO limiting magnitudes from current FOV using D3 scaleLog (base 10),
+ * anchored to the chart's current reference FOV & limiting magnitudes (not naked-eye 90°).
+ *
+ * 1) Stars (point sources): Pogson Aperture-Flux Law (Δm = 5 · log10(FOV_ref / FOV))
+ * 2) DSOs (extended objects): Etendue Conservation + Ricco-Blackwell Law (Δm = 2.5 · log10(FOV_ref / FOV))
+ */
+const MIN_CHART_FOV_DEG = 0.02;
+const MAX_CHART_FOV_DEG = 135.0;
+const AUTO_ZOOM_MAX_STAR_MAG = 12.0;
+const AUTO_ZOOM_MAX_DSO_MAG = 14.0;
+
+export function computeLinkedLimitingMags(
+  nextFovDeg: number,
+  ref?: {
+    fovDeg?: number;
+    limitStarMag?: number;
+    limitDsoMag?: number;
+    magRefStarFovDeg?: number;
+    magRefStarMag?: number;
+    magRefDsoFovDeg?: number;
+    magRefDsoMag?: number;
+  }
+): {
+  limitStarMag: number;
+  limitDsoMag: number;
+  magRefStarFovDeg: number;
+  magRefStarMag: number;
+  magRefDsoFovDeg: number;
+  magRefDsoMag: number;
+} {
+  const safeNextFov = Math.max(MIN_CHART_FOV_DEG, Math.min(MAX_CHART_FOV_DEG, nextFovDeg));
+
+  const starRefFov = Math.max(
+    MIN_CHART_FOV_DEG,
+    Math.min(MAX_CHART_FOV_DEG, ref?.magRefStarFovDeg ?? ref?.fovDeg ?? 32)
+  );
+  const starRefMag = ref?.magRefStarMag ?? ref?.limitStarMag ?? 9.8;
+
+  const dsoRefFov = Math.max(
+    MIN_CHART_FOV_DEG,
+    Math.min(MAX_CHART_FOV_DEG, ref?.magRefDsoFovDeg ?? ref?.fovDeg ?? 32)
+  );
+  const dsoRefMag = ref?.magRefDsoMag ?? ref?.limitDsoMag ?? 11.8;
+
+  // Unclamped d3.scaleLog(base 10): exact Δm = slope · log10(FOV_ref / FOV) across zoom in & zoom out
+  const starPogsonScale = d3
+    .scaleLog<number, number>()
+    .base(10)
+    .domain([starRefFov, starRefFov * 0.1])
+    .range([starRefMag, starRefMag + 5.0]);
+
+  const dsoRiccoScale = d3
+    .scaleLog<number, number>()
+    .base(10)
+    .domain([dsoRefFov, dsoRefFov * 0.1])
+    .range([dsoRefMag, dsoRefMag + 2.5]);
+
+  // Zooming in never automatically raises limiting mag past Star 12.0 / DSO 14.0;
+  // values higher than 12.0 / 14.0 can only be reached via manual slider adjustments.
+  const starCeiling = Math.min(
+    14.0,
+    Math.max(AUTO_ZOOM_MAX_STAR_MAG, ref?.limitStarMag ?? AUTO_ZOOM_MAX_STAR_MAG)
+  );
+  const dsoCeiling = Math.min(
+    16.0,
+    Math.max(AUTO_ZOOM_MAX_DSO_MAG, ref?.limitDsoMag ?? AUTO_ZOOM_MAX_DSO_MAG)
+  );
+
+  const limitStarMag = Math.max(
+    4.0,
+    Math.min(starCeiling, Number(starPogsonScale(safeNextFov).toFixed(1)))
+  );
+  const limitDsoMag = Math.max(
+    5.0,
+    Math.min(dsoCeiling, Number(dsoRiccoScale(safeNextFov).toFixed(1)))
+  );
+
+  return {
+    limitStarMag,
+    limitDsoMag,
+    magRefStarFovDeg: starRefFov,
+    magRefStarMag: starRefMag,
+    magRefDsoFovDeg: dsoRefFov,
+    magRefDsoMag: dsoRefMag,
+  };
+}
+
+const starRadiusPowScale = d3
+  .scalePow<number, number>()
+  .exponent(1.38)
+  .domain([0, 10])
+  .range([0, Math.pow(10, 1.38)]);
+
+/**
+ * Compute star disc radius in pixels/points using fchart3's magnitude power-law formula via d3.scalePow.
  */
 export function computeStarRadius(
   mag: number,
@@ -206,9 +331,9 @@ export function computeStarRadius(
   scaleFactor = 1.0,
   baseSize = 1.0
 ): number {
-  const delta = Math.max(0, limitStarMag - mag + 0.6);
-  const r = (0.45 + Math.pow(delta, 1.42) * 0.17) * scaleFactor * baseSize;
-  return Math.max(0.45 * baseSize, Math.min(4.25 * baseSize, r));
+  const delta = Math.max(0, limitStarMag - mag + 0.5);
+  const r = (0.38 + starRadiusPowScale(delta) * 0.145) * scaleFactor * baseSize;
+  return Math.max(0.38 * baseSize, Math.min(3.6 * baseSize, r));
 }
 
 /**
@@ -221,13 +346,13 @@ export function bvToStarColor(bv: number, scheme: ChartColorScheme): string {
   if (scheme === 'nightvision') {
     return '#F87171';
   }
-  // Observatory dark mode: authentic subtle Planck B-V colors
-  if (bv < -0.05) return '#BAE6FD'; // O/B blue-white
-  if (bv < 0.25) return '#F8FAFC'; // A white
-  if (bv < 0.55) return '#FEF9C3'; // F yellow-white
-  if (bv < 0.90) return '#FDE047'; // G yellow
-  if (bv < 1.35) return '#FDBA74'; // K orange
-  return '#FCA5A5'; // M red giant
+  // Observatory dark mode: crisp white/subtle natural Planck B-V tints
+  if (bv < -0.05) return '#CFE8FF'; // O/B blue-white
+  if (bv < 0.25) return '#F8FAFC'; // A pure white
+  if (bv < 0.55) return '#FFFBE6'; // F warm white
+  if (bv < 0.90) return '#FFF1C2'; // G soft yellow-white
+  if (bv < 1.35) return '#FFD7A8'; // K soft amber
+  return '#FFB899'; // M warm orange-red
 }
 
 /**
@@ -248,7 +373,7 @@ export function createCelestialProjection(
   centerAltDeg = 40
 ): d3.GeoProjection {
   const minDim = Math.min(width, height);
-  const fovRad = (Math.max(1.0, Math.min(165, fovDeg)) * Math.PI) / 180;
+  const fovRad = (Math.max(0.015, Math.min(165, fovDeg)) * Math.PI) / 180;
 
   let proj: d3.GeoProjection;
   if (projectionMode === 'orthographic') {
@@ -352,8 +477,8 @@ export const ATLAS_PRESETS: Record<
   }
 > = {
   binocular_14: {
-    nameKo: '광시야 쌍안경 전천 성도집 (14매)',
-    nameEn: 'Wide-Field Binocular All-Sky Atlas (14 Charts)',
+    nameKo: '광시야 쌍안경 전천 성도집 (31매)',
+    nameEn: 'Wide-Field Binocular All-Sky Atlas (31 Charts)',
     subtitleKo: '7×50 쌍안경 및 육안 관측용 · 한계등급 6.5 · 화각 48°',
     decMinDeg: -90,
     decMaxDeg: 90,
@@ -363,8 +488,8 @@ export const ATLAS_PRESETS: Record<
     limitDsoMag: 9.0,
   },
   tirion_26: {
-    nameKo: '표준 아마추어 전천 성도집 (26매)',
-    nameEn: 'Tirion / SkyAtlas 2000 Standard (26 Charts)',
+    nameKo: '표준 아마추어 전천 성도집 (69매)',
+    nameEn: 'Tirion / SkyAtlas 2000 Standard (69 Charts)',
     subtitleKo: '표준 대구경 파인더 및 소형 망원경용 · 한계등급 8.2 · 화각 32°',
     decMinDeg: -90,
     decMaxDeg: 90,
@@ -374,8 +499,8 @@ export const ATLAS_PRESETS: Record<
     limitDsoMag: 11.2,
   },
   korean_seasonal_18: {
-    nameKo: '한반도 중위도 관측 성도집 (18매)',
-    nameEn: 'Mid-Latitude Northern Observatory Atlas (-35° ~ +90°)',
+    nameKo: '한반도 중위도 관측 성도집 (60매)',
+    nameEn: 'Mid-Latitude Northern Observatory Atlas (60 Charts)',
     subtitleKo: '북위 37° 기준 관측 가능 영역 집중 분할 · 한계등급 8.8 · 화각 28°',
     decMinDeg: -35,
     decMaxDeg: 90,
@@ -385,8 +510,8 @@ export const ATLAS_PRESETS: Record<
     limitDsoMag: 11.8,
   },
   messier_deep_44: {
-    nameKo: '딥스카이 정밀 탐색 성도집 (38매)',
-    nameEn: 'Deep-Sky Messier/NGC Precision Atlas',
+    nameKo: '딥스카이 정밀 탐색 성도집 (104매)',
+    nameEn: 'Deep-Sky Messier/NGC Precision Atlas (104 Charts)',
     subtitleKo: '성운·은하 윤곽선 정밀 탐색 · 한계등급 9.8 · 화각 22°',
     decMinDeg: -45,
     decMaxDeg: 90,

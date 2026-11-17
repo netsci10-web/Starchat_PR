@@ -50,6 +50,7 @@ export interface MilkyWayContourLevel {
   labelKo: string;
   labelEn: string;
   polygons: Array<Array<[number, number]>>; // Array of closed loops in [raDeg, decDeg]
+  bandRings?: [Array<[number, number]>, Array<[number, number]>]; // Seamless north & south boundary loops for 360° band
   isDarkRift?: boolean;
 }
 
@@ -78,6 +79,51 @@ export interface DSORecord {
   contourPolygons?: Array<Array<[number, number]>>;
 }
 
+export type SolarSystemBodyKind =
+  | 'sun'
+  | 'moon'
+  | 'planet'
+  | 'dwarf_planet'
+  | 'satellite'
+  | 'asteroid';
+
+export interface SolarSystemBodyRecord {
+  id: string;
+  kind: SolarSystemBodyKind;
+  nameKo: string;
+  nameEn: string;
+  parentBodyId?: string;
+  parentNameKo?: string;
+  raHours: number;
+  raDeg: number;
+  decDeg: number;
+  mag: number;
+  angularDiameterArcsec: number;
+  distanceAu: number;
+  phasePercent?: number;
+  color: string;
+  hasRings?: boolean;
+  /** IAU J2000 North Pole RA/Dec (deg) for true sky Position Angle alignment */
+  poleRaDeg?: number;
+  poleDecDeg?: number;
+  /** Sub-Earth latitude B_e (deg; + = North pole tilted toward Earth) */
+  subEarthLatDeg?: number;
+  /** Sub-Solar latitude B_sun (deg; + = North pole tilted toward Sun) */
+  subSolarLatDeg?: number;
+  /** Central Meridian West Longitude (deg, 0-360) at observation time */
+  centralMeridianDeg?: number;
+  /** Polar flattening (1 - R_polar / R_eq) for oblate gas giants */
+  flattening?: number;
+  /** True if a planetary satellite is currently inside its parent planet's shadow */
+  inEclipse?: boolean;
+  descriptionKo: string;
+}
+
+export type SelectedSkyObject =
+  | { type: 'star'; data: StarRecord }
+  | { type: 'dso'; data: DSORecord }
+  | { type: 'solar'; data: SolarSystemBodyRecord };
+
 export type CoordinateSystemMode = 'equatorial' | 'horizontal';
 
 export interface FChart3Config {
@@ -92,17 +138,22 @@ export interface FChart3Config {
   observerLocationName: string;
   observationDateTime: string; // YYYY-MM-DDTHH:mm local time
   showHorizonGround: boolean; // Show ground mask & horizon line in Horizontal mode
+  horizonAltDeg?: number; // Horizon depression offset in Horizontal mode (0 = current true horizon max, down to -85)
 
   // View & Optics
-  fovDeg: number; // Field of view in degrees (1.0 to 140)
+  fovDeg: number; // Field of view in degrees (0.02 to 135)
   projection: ProjectionMode;
   colorScheme: ChartColorScheme;
   mirrorHorizontal: boolean; // Mirror for diagonal prism / Newtonian views
   mirrorVertical: boolean;
 
   // Magnitude & Dynamic Filtering (fchart3 core flags)
-  limitStarMag: number; // -limit-star / -lim-star (e.g., 4.5 to 11.5)
+  limitStarMag: number; // -limit-star / -lim-star (e.g., 4.5 to 14.0)
   limitDsoMag: number; // -limit-dso / -lim-dso (e.g., 6.0 to 14.0)
+  magRefStarFovDeg?: number; // Current reference FOV (deg) for Star Pogson scaling
+  magRefStarMag?: number; // Star limiting magnitude at magRefStarFovDeg
+  magRefDsoFovDeg?: number; // Current reference FOV (deg) for DSO Ricco scaling
+  magRefDsoMag?: number; // DSO limiting magnitude at magRefDsoFovDeg
   starScaleFactor: number; // Magnitude disc sizing multiplier (0.7 to 1.5)
 
   // Vector Layer Toggles
@@ -114,6 +165,9 @@ export interface FChart3Config {
   showNebulaOutlines: boolean; // Extended vector polygons for nebulae & galaxies
   showMessierObjects: boolean; // Messier Catalog (M1 - M110)
   showCaldwellObjects: boolean; // Caldwell Catalog (C1 - C109)
+  showSolarSystem: boolean; // Planets, major moons, asteroids & dwarf planets
+  showSolarSystemLabels: boolean; // Labels for solar system bodies
+  showPlanetDetails?: boolean; // Show planetary phases & surface details when zoomed or selected
   showEquatorialGrid: boolean; // J2000 RA/Dec or Alt-Az graticule
   showEclipticAndGalactic: boolean; // Ecliptic & Galactic Equator
   showStarLabels: 'all_named' | 'bayer_and_named' | 'bright_only' | 'none';
@@ -122,9 +176,14 @@ export interface FChart3Config {
   showScaleBar: boolean; // Angular scale bar
   showCursorCoords: boolean; // Live cursor coordinate readout in top-right of chart
 
-  // Finder Reticle / Telrad Overlay
+  // Finder Reticle / Telrad Overlay & Telescope Optics
   reticleMode: 'none' | 'telrad' | 'binoculars_7x50' | 'eyepiece_afov' | 'ccd_sensor';
+  activeReticles?: Array<'telrad' | 'binoculars_7x50' | 'eyepiece_afov'>;
   customEyepieceFovDeg: number;
+  eyepieceInputMode?: 'direct' | 'telescope';
+  telescopeFocalLengthMm?: number;
+  eyepieceFocalLengthMm?: number;
+  eyepieceAfovDeg?: number;
 }
 
 export type AtlasPresetId =

@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import * as d3 from 'd3';
 import {
   Compass,
   Crosshair,
@@ -17,20 +18,47 @@ import {
   MESSIER_CATALOG,
 } from '../data/astronomyData';
 import {
-  ChartColorScheme,
   ConstellationStick,
   DSORecord,
   FChart3Config,
   ProjectionMode,
+  SolarSystemBodyRecord,
   StarRecord,
 } from '../types/astronomy';
 import {
+  computeLinkedLimitingMags,
   computeLstDeg,
   equatorialToHorizontal,
   formatDecDeg,
   formatRaHours,
   horizontalToEquatorial,
 } from '../utils/atlasGenerator';
+import {
+  computeSolarSystemBodies,
+  getRecommendedSolarFov,
+} from '../utils/solarSystemEphemeris';
+import { startSkySlew } from '../utils/skySlew';
+
+const MIN_SIDEBAR_FOV_DEG = 0.02;
+const MAX_SIDEBAR_FOV_DEG = 135;
+
+const fovSliderScale = d3
+  .scaleLog<number, number>()
+  .base(10)
+  .domain([MIN_SIDEBAR_FOV_DEG, MAX_SIDEBAR_FOV_DEG])
+  .range([0, 1000])
+  .clamp(true);
+
+function fovToSliderStep(fovDeg: number): number {
+  return Math.round(fovSliderScale(fovDeg));
+}
+
+function sliderStepToFov(step: number): number {
+  const raw = fovSliderScale.invert(Math.max(0, Math.min(1000, step)));
+  if (raw < 0.2) return Number(raw.toFixed(3));
+  if (raw < 2) return Number(raw.toFixed(2));
+  return Number(raw.toFixed(1));
+}
 
 interface FChart3SidebarProps {
   config: FChart3Config;
@@ -39,6 +67,7 @@ interface FChart3SidebarProps {
   onOpenSettingsTab: () => void;
   onSelectDso: (dso: DSORecord) => void;
   onSelectStar?: (star: StarRecord) => void;
+  onSelectSolarBody?: (body: SolarSystemBodyRecord) => void;
   sheetsCount: number;
 }
 
@@ -62,6 +91,15 @@ type SidebarUnifiedItem =
       star: StarRecord;
     }
   | {
+      kind: 'solar';
+      badge: string;
+      badgeClass: string;
+      id: string;
+      title: string;
+      sub: string;
+      solar: SolarSystemBodyRecord;
+    }
+  | {
       kind: 'constellation';
       badge: string;
       badgeClass: string;
@@ -78,14 +116,16 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
   onOpenSettingsTab,
   onSelectDso,
   onSelectStar,
+  onSelectSolarBody,
   sheetsCount,
 }) => {
   const [sidebarMode, setSidebarMode] = useState<'settings' | 'search'>('settings');
-  const [finderTab, setFinderTab] = useState<'messier' | 'caldwell' | 'constellations'>('messier');
+  const [finderTab, setFinderTab] = useState<'messier' | 'caldwell' | 'solar' | 'constellations'>('messier');
   const [unifiedSearchQuery, setUnifiedSearchQuery] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMessierId, setSelectedMessierId] = useState<string>('M42');
   const [selectedCaldwellId, setSelectedCaldwellId] = useState<string>('C20');
+  const [selectedSolarId, setSelectedSolarId] = useState<string>('jupiter');
   const [selectedConstellationCode, setSelectedConstellationCode] = useState<string>('Ori');
 
   const q = searchQuery.trim().toLowerCase();
@@ -97,6 +137,11 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
     [config.observationDateTime, config.observerLonDeg]
   );
 
+  const solarSystemBodies = useMemo<SolarSystemBodyRecord[]>(
+    () => computeSolarSystemBodies(config.observationDateTime),
+    [config.observationDateTime]
+  );
+
   const constellationMap = useMemo(() => {
     const m = new Map<string, { nameKo: string; nameEn: string }>();
     CONSTELLATION_DATA.forEach((c) => m.set(c.constellation, { nameKo: c.nameKo, nameEn: c.nameEn }));
@@ -106,6 +151,57 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
   const unifiedResults = useMemo<SidebarUnifiedItem[]>(() => {
     if (!uq) return [];
     const list: SidebarUnifiedItem[] = [];
+
+    for (const body of solarSystemBodies) {
+      const hay = [
+        body.id,
+        body.nameKo,
+        body.nameEn,
+        body.parentNameKo || '',
+        body.kind === 'planet'
+          ? '행성 planet'
+          : body.kind === 'satellite'
+          ? '위성 moon satellite'
+          : body.kind === 'asteroid'
+          ? '소행성 asteroid'
+          : body.kind === 'dwarf_planet'
+          ? '왜행성 dwarf planet'
+          : body.kind,
+      ]
+        .join(' ')
+        .toLowerCase();
+      if (hay.includes(uq)) {
+        const badgeLabel =
+          body.kind === 'sun'
+            ? '태양'
+            : body.kind === 'moon'
+            ? '달'
+            : body.kind === 'planet'
+            ? '행성'
+            : body.kind === 'dwarf_planet'
+            ? '왜행성'
+            : body.kind === 'satellite'
+            ? `${body.parentNameKo || ''} 위성`
+            : '소행성';
+        list.push({
+          kind: 'solar',
+          badge: badgeLabel,
+          badgeClass:
+            body.kind === 'planet' || body.kind === 'sun'
+              ? 'bg-amber-950/70 text-amber-300 border-amber-700/60'
+              : body.kind === 'satellite'
+              ? 'bg-sky-950/70 text-sky-300 border-sky-700/60'
+              : 'bg-violet-950/70 text-violet-300 border-violet-700/60',
+          id: `sol-${body.id}`,
+          title: `${body.nameKo} (${body.nameEn})`,
+          sub: `${badgeLabel} · ${body.mag.toFixed(1)}m · ${formatRaHours(body.raHours, true)} ${formatDecDeg(
+            body.decDeg,
+            true
+          )}`,
+          solar: body,
+        });
+      }
+    }
 
     for (const star of BRIGHT_STARS) {
       const con = constellationMap.get(star.constellation);
@@ -193,8 +289,8 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
       }
     }
 
-    return list.slice(0, 40);
-  }, [uq, constellationMap]);
+    return list.slice(0, 45);
+  }, [uq, constellationMap, solarSystemBodies]);
 
   const filteredMessier = useMemo(() => {
     if (!q) return MESSIER_CATALOG;
@@ -220,6 +316,18 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
     );
   }, [q]);
 
+  const filteredSolarBodies = useMemo(() => {
+    if (!q) return solarSystemBodies;
+    return solarSystemBodies.filter(
+      (b) =>
+        b.id.toLowerCase().includes(q) ||
+        b.nameKo.toLowerCase().includes(q) ||
+        b.nameEn.toLowerCase().includes(q) ||
+        (b.parentNameKo && b.parentNameKo.toLowerCase().includes(q)) ||
+        b.kind.toLowerCase().includes(q)
+    );
+  }, [q, solarSystemBodies]);
+
   const filteredConstellations = useMemo(() => {
     if (!q) return CONSTELLATION_DATA;
     return CONSTELLATION_DATA.filter(
@@ -234,47 +342,76 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
     onSelectDso(dso);
     if (dso.messierId) setSelectedMessierId(dso.id);
     if (dso.caldwellId) setSelectedCaldwellId(dso.id);
-    const [az, alt] = equatorialToHorizontal(
-      dso.raDeg,
-      dso.decDeg,
-      config.observerLatDeg,
-      lstDeg
-    );
-    onChangeConfig((prev) => ({
-      ...prev,
-      showMessierObjects: dso.messierId ? true : prev.showMessierObjects,
-      showCaldwellObjects: dso.caldwellId ? true : prev.showCaldwellObjects,
-      showNebulaOutlines:
-        !dso.messierId && !dso.caldwellId ? true : prev.showNebulaOutlines,
-      showConstellationLines: true,
-      centerRaHours: dso.raHours,
-      centerDecDeg: dso.decDeg,
-      centerAzDeg: Number(az.toFixed(1)),
-      centerAltDeg: Number(alt.toFixed(1)),
-      fovDeg: 18,
-      limitStarMag: Math.max(prev.limitStarMag, 8.6),
-      limitDsoMag: Math.max(prev.limitDsoMag, Number((dso.mag + 0.5).toFixed(1))),
-    }));
+    const nextFov = 18;
+    const linked = computeLinkedLimitingMags(nextFov, config);
+    const nextDsoMag = Math.max(linked.limitDsoMag, Number((dso.mag + 0.5).toFixed(1)));
+    const extraFinalPatch: Partial<FChart3Config> =
+      nextDsoMag > linked.limitDsoMag
+        ? {
+            limitDsoMag: nextDsoMag,
+            magRefDsoFovDeg: nextFov,
+            magRefDsoMag: nextDsoMag,
+          }
+        : {};
+    startSkySlew({
+      currentConfig: config,
+      onChangeConfig,
+      targetRaHours: dso.raHours,
+      targetDecDeg: dso.decDeg,
+      targetFovDeg: nextFov,
+      extraInitialPatch: {
+        showMessierObjects: dso.messierId ? true : config.showMessierObjects,
+        showCaldwellObjects: dso.caldwellId ? true : config.showCaldwellObjects,
+        showNebulaOutlines:
+          !dso.messierId && !dso.caldwellId ? true : config.showNebulaOutlines,
+        showConstellationLines: true,
+      },
+      extraFinalPatch,
+    });
   };
 
   const jumpToStar = (star: StarRecord) => {
     onSelectStar?.(star);
-    const [az, alt] = equatorialToHorizontal(
-      star.raDeg,
-      star.decDeg,
-      config.observerLatDeg,
-      lstDeg
-    );
-    onChangeConfig((prev) => ({
-      ...prev,
-      showConstellationLines: true,
-      centerRaHours: star.raHours,
-      centerDecDeg: star.decDeg,
-      centerAzDeg: Number(az.toFixed(1)),
-      centerAltDeg: Number(alt.toFixed(1)),
-      fovDeg: 14,
-      limitStarMag: Math.max(prev.limitStarMag, Number((star.mag + 0.5).toFixed(1))),
-    }));
+    const nextFov = 14;
+    const linked = computeLinkedLimitingMags(nextFov, config);
+    const nextStarMag = Math.max(linked.limitStarMag, Number((star.mag + 0.5).toFixed(1)));
+    const extraFinalPatch: Partial<FChart3Config> =
+      nextStarMag > linked.limitStarMag
+        ? {
+            limitStarMag: nextStarMag,
+            magRefStarFovDeg: nextFov,
+            magRefStarMag: nextStarMag,
+          }
+        : {};
+    startSkySlew({
+      currentConfig: config,
+      onChangeConfig,
+      targetRaHours: star.raHours,
+      targetDecDeg: star.decDeg,
+      targetFovDeg: nextFov,
+      extraInitialPatch: {
+        showConstellationLines: true,
+      },
+      extraFinalPatch,
+    });
+  };
+
+  const jumpToSolarBody = (body: SolarSystemBodyRecord) => {
+    setSelectedSolarId(body.id);
+    onSelectSolarBody?.(body);
+    const nextFov = getRecommendedSolarFov(body);
+    startSkySlew({
+      currentConfig: config,
+      onChangeConfig,
+      targetRaHours: body.raHours,
+      targetDecDeg: body.decDeg,
+      targetFovDeg: nextFov,
+      extraInitialPatch: {
+        showSolarSystem: true,
+        showSolarSystemLabels: true,
+        showPlanetDetails: true,
+      },
+    });
   };
 
   const handleSelectSidebarUnifiedItem = (item: SidebarUnifiedItem) => {
@@ -282,24 +419,21 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
       jumpToDso(item.dso);
     } else if (item.kind === 'star') {
       jumpToStar(item.star);
+    } else if (item.kind === 'solar') {
+      jumpToSolarBody(item.solar);
     } else {
       const con = item.constellation;
       setSelectedConstellationCode(con.constellation);
-      const [az, alt] = equatorialToHorizontal(
-        con.raCenterHours * 15,
-        con.decCenterDeg,
-        config.observerLatDeg,
-        lstDeg
-      );
-      onChangeConfig((prev) => ({
-        ...prev,
-        showConstellationLines: true,
-        centerRaHours: con.raCenterHours,
-        centerDecDeg: con.decCenterDeg,
-        centerAzDeg: Number(az.toFixed(1)),
-        centerAltDeg: Number(alt.toFixed(1)),
-        fovDeg: 36,
-      }));
+      startSkySlew({
+        currentConfig: config,
+        onChangeConfig,
+        targetRaHours: con.raCenterHours,
+        targetDecDeg: con.decCenterDeg,
+        targetFovDeg: 36,
+        extraInitialPatch: {
+          showConstellationLines: true,
+        },
+      });
     }
   };
 
@@ -335,14 +469,14 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
   };
 
   return (
-    <aside className="w-full lg:w-[360px] shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-full min-h-0 overflow-hidden">
+    <aside className="w-full h-full bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-r border-slate-200 dark:border-slate-800 flex flex-col min-h-0 overflow-hidden">
       {/* Top Tab Bar: 설정 | 검색창 (설정 옆에 검색창 탭 배치) */}
-      <div className="px-3.5 pt-3 pb-2 border-b border-slate-200 dark:border-slate-800 shrink-0">
-        <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+      <div className="px-2.5 pt-2 pb-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        <div className="grid grid-cols-2 gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg">
           <button
             type="button"
             onClick={() => setSidebarMode('settings')}
-            className={`py-1.5 px-3 text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+            className={`py-1.5 px-2 text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
               sidebarMode === 'settings'
                 ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -354,7 +488,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
           <button
             type="button"
             onClick={() => setSidebarMode('search')}
-            className={`py-1.5 px-3 text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+            className={`py-1.5 px-2 text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
               sidebarMode === 'search'
                 ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -370,43 +504,17 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
         /* =====================================================================
            TAB 1: 설정 (메시에·콜드웰 천체 목록 제거, 한 화면에 깔끔하게 표시)
            ===================================================================== */
-        <div className="flex-1 min-h-0 overflow-y-auto p-3.5 flex flex-col justify-between gap-3">
-          <div className="space-y-3.5">
-            {/* Section 1: Cartographic Theme, Projection & Coordinate System */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-2.5 flex flex-col justify-between gap-2.5">
+          <div className="space-y-3">
+            {/* Section 1: Projection & Coordinate System */}
             <div>
               <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 mb-1.5 flex items-center justify-between">
-                <span>성도 출력 테마 · 투영법 · 좌표계</span>
-                <span className="font-mono text-[11px] text-slate-400">D3-GEO</span>
-              </div>
-
-              {/* 3-Mode Color Scheme Selector */}
-              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
-                {(
-                  [
-                    { id: 'paper', label: '백색 출판' },
-                    { id: 'observatory', label: '다크 관측' },
-                    { id: 'nightvision', label: '적색 야간' },
-                  ] as Array<{ id: ChartColorScheme; label: string }>
-                ).map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() =>
-                      onChangeConfig((prev) => ({ ...prev, colorScheme: item.id }))
-                    }
-                    className={`py-1 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                      config.colorScheme === item.id
-                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
+                <span>투영 · 좌표</span>
+                <span className="font-mono text-[10px] text-slate-400">D3-GEO</span>
               </div>
 
               {/* Projection Mode Selector */}
-              <div className="mt-1.5 grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+              <div className="grid grid-cols-3 gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg">
                 {(
                   [
                     { id: 'stereographic', label: '입체(Stereo)' },
@@ -420,7 +528,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                     onClick={() =>
                       onChangeConfig((prev) => ({ ...prev, projection: proj.id }))
                     }
-                    className={`py-1 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                    className={`py-1 px-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                       config.projection === proj.id
                         ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -432,28 +540,28 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
               </div>
 
               {/* Coordinate System Selector: Equatorial vs Horizontal */}
-              <div className="mt-1.5 grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+              <div className="mt-1.5 grid grid-cols-2 gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg">
                 <button
                   type="button"
                   onClick={() => handleCoordinateModeChange('equatorial')}
-                  className={`py-1 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`py-1 px-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                     !isHorizontal
                       ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs font-semibold'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  적도좌표계 (RA/Dec)
+                  적도좌표 (RA/Dec)
                 </button>
                 <button
                   type="button"
                   onClick={() => handleCoordinateModeChange('horizontal')}
-                  className={`py-1 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`py-1 px-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                     isHorizontal
                       ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs font-semibold'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  지평좌표계 (Az/Alt)
+                  지평좌표 (Az/Alt)
                 </button>
               </div>
 
@@ -482,7 +590,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   <label className="flex items-center justify-between text-xs text-slate-800 dark:text-slate-200 pt-1 border-t border-emerald-200/70 dark:border-emerald-800/50 cursor-pointer">
                     <span className="flex items-center gap-1.5">
                       <Compass className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span>지평선 및 지상(Ground) 표시</span>
+                      <span className="font-medium">지평선</span>
                     </span>
                     <input
                       type="checkbox"
@@ -496,75 +604,158 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                       className="rounded accent-emerald-600 cursor-pointer"
                     />
                   </label>
+                  <div className="pt-1 space-y-0.5">
+                    <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                      <span>지평선 위치</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onChangeConfig((p) => ({ ...p, horizonAltDeg: 0 }))
+                        }
+                        className="font-mono font-semibold tabular-nums text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                        title="현재 위치(0°)로 되돌리기"
+                      >
+                        {(config.horizonAltDeg ?? 0) === 0
+                          ? '0° (현재)'
+                          : `${(config.horizonAltDeg ?? 0).toFixed(0)}°`}
+                      </button>
+                    </div>
+                    <input
+                      type="range"
+                      min={-85}
+                      max={0}
+                      step={1}
+                      value={config.horizonAltDeg ?? 0}
+                      disabled={!config.showHorizonGround}
+                      onChange={(e) =>
+                        onChangeConfig((p) => ({
+                          ...p,
+                          horizonAltDeg: Number(e.target.value),
+                        }))
+                      }
+                      className="w-full accent-emerald-600 disabled:opacity-40 cursor-pointer"
+                      title="지평선을 화면 아래쪽으로 내려 성도 위쪽 하늘의 별을 더 많이 볼 수 있게 합니다"
+                    />
+                    <div className="flex justify-between text-[9px] font-mono text-slate-400">
+                      <span>-85°</span>
+                      <span>-45°</span>
+                      <span>0° (현재)</span>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* Section 2: FOV & Limiting Magnitude Sliders (Minimum FOV = 1.0°) */}
-            <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
-              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center justify-between">
-                <span>한계등급 (Limiting Mag) 및 화각 (FOV)</span>
-                <span className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400">
-                  최소 1.0° 지원
+            {/* Section 2: FOV & Limiting Magnitude Sliders */}
+            <div className="pt-2.5 border-t border-slate-200 dark:border-slate-800 space-y-2">
+              <div
+                className="flex items-center justify-between text-xs font-semibold text-slate-900 dark:text-slate-100"
+                title="현재 화각과 한계등급을 기준점으로 항성(5·log₁₀)과 DSO(2.5·log₁₀)를 D3 scaleLog로 연동"
+              >
+                <span>화각 및 한계등급</span>
+                <span className="font-mono text-[9.5px] font-normal text-cyan-600 dark:text-cyan-400">
+                  Pogson · D3 log
                 </span>
               </div>
 
-              {/* FOV Slider (min = 1.0°) */}
+              {/* Logarithmic FOV Slider (0.02° ~ 135°) */}
               <div>
                 <div className="flex items-center justify-between text-xs mb-0.5">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    화각 (Field of View · 1.0°~135°)
+                  <span className="text-slate-700 dark:text-slate-300 font-medium">
+                    화각(FOV)
                   </span>
                   <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-                    {config.fovDeg.toFixed(1)}°
+                    {config.fovDeg < 0.2
+                      ? config.fovDeg.toFixed(3)
+                      : config.fovDeg < 2
+                      ? config.fovDeg.toFixed(2)
+                      : config.fovDeg.toFixed(1)}
+                    °
+                    {config.fovDeg < 2 && (
+                      <span className="text-[10px] text-cyan-500 ml-1">
+                        ({(config.fovDeg * 60).toFixed(1)}′)
+                      </span>
+                    )}
                   </span>
                 </div>
                 <input
                   type="range"
-                  min={1.0}
-                  max={135}
-                  step={0.5}
-                  value={config.fovDeg}
-                  onChange={(e) =>
+                  min={0}
+                  max={1000}
+                  step={1}
+                  value={fovToSliderStep(config.fovDeg)}
+                  onChange={(e) => {
+                    const nextFov = sliderStepToFov(Number(e.target.value));
                     onChangeConfig((prev) => ({
                       ...prev,
-                      fovDeg: Math.max(1.0, Number(e.target.value)),
-                    }))
-                  }
+                      fovDeg: nextFov,
+                      ...computeLinkedLimitingMags(nextFov, prev),
+                    }));
+                  }}
                   className="w-full accent-cyan-600"
                 />
-                <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                <div className="flex justify-between text-[9px] font-mono text-slate-400">
                   <button
                     type="button"
-                    onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 1.0 }))}
+                    onClick={() =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        fovDeg: 0.02,
+                        ...computeLinkedLimitingMags(0.02, p),
+                      }))
+                    }
                     className="hover:text-cyan-500 cursor-pointer font-semibold"
                   >
-                    1.0° 최소
+                    0.02° 극대
                   </button>
                   <button
                     type="button"
-                    onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 10 }))}
+                    onClick={() =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        fovDeg: 0.3,
+                        ...computeLinkedLimitingMags(0.3, p),
+                      }))
+                    }
+                    className="hover:text-cyan-500 cursor-pointer font-semibold"
+                  >
+                    0.3° 행성
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        fovDeg: 10,
+                        ...computeLinkedLimitingMags(10, p),
+                      }))
+                    }
                     className="hover:text-cyan-500 cursor-pointer"
                   >
                     10° 정밀
                   </button>
                   <button
                     type="button"
-                    onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 25 }))}
+                    onClick={() =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        fovDeg: 25,
+                        ...computeLinkedLimitingMags(25, p),
+                      }))
+                    }
                     className="hover:text-cyan-500 cursor-pointer"
                   >
                     25° 표준
                   </button>
                   <button
                     type="button"
-                    onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 45 }))}
-                    className="hover:text-cyan-500 cursor-pointer"
-                  >
-                    45° 쌍안경
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeConfig((p) => ({ ...p, fovDeg: 90 }))}
+                    onClick={() =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        fovDeg: 90,
+                        ...computeLinkedLimitingMags(90, p),
+                      }))
+                    }
                     className="hover:text-cyan-500 cursor-pointer"
                   >
                     90° 광시야
@@ -572,13 +763,13 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                 </div>
               </div>
 
-              {/* Star Limiting Magnitude Slider (up to 14.0) */}
+              {/* Star Limiting Magnitude Slider (up to 14.0) - re-anchors Star reference at current FOV */}
               <div>
                 <div className="flex items-center justify-between text-xs mb-0.5">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    항성 한계등급 (-limit-star · 최대 14.0)
+                  <span className="text-slate-700 dark:text-slate-300 font-medium">
+                    별 등급(Star)
                   </span>
-                  <span className="font-mono font-semibold tabular-nums text-cyan-600 dark:text-cyan-400">
+                  <span className="font-mono font-semibold tabular-nums text-cyan-600 dark:text-cyan-400 whitespace-nowrap">
                     ≤ {config.limitStarMag.toFixed(1)} 등급
                   </span>
                 </div>
@@ -588,38 +779,44 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   max={14.0}
                   step={0.1}
                   value={config.limitStarMag}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextStarMag = Number(e.target.value);
                     onChangeConfig((prev) => ({
                       ...prev,
-                      limitStarMag: Number(e.target.value),
-                    }))
-                  }
+                      limitStarMag: nextStarMag,
+                      magRefStarFovDeg: prev.fovDeg,
+                      magRefStarMag: nextStarMag,
+                    }));
+                  }}
                   className="w-full accent-cyan-600"
                 />
               </div>
 
-              {/* DSO Limiting Magnitude Slider (up to 14.0) */}
+              {/* DSO Limiting Magnitude Slider (up to 16.0) - re-anchors DSO reference at current FOV */}
               <div>
                 <div className="flex items-center justify-between text-xs mb-0.5">
-                  <span className="text-slate-600 dark:text-slate-400">
-                    성운·은하 한계등급 (-limit-dso · 최대 14.0)
+                  <span className="text-slate-700 dark:text-slate-300 font-medium">
+                    성운·성단(DSO)
                   </span>
-                  <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                  <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100 whitespace-nowrap">
                     ≤ {config.limitDsoMag.toFixed(1)} 등급
                   </span>
                 </div>
                 <input
                   type="range"
                   min={5.0}
-                  max={14.0}
+                  max={16.0}
                   step={0.1}
                   value={config.limitDsoMag}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextDsoMag = Number(e.target.value);
                     onChangeConfig((prev) => ({
                       ...prev,
-                      limitDsoMag: Number(e.target.value),
-                    }))
-                  }
+                      limitDsoMag: nextDsoMag,
+                      magRefDsoFovDeg: prev.fovDeg,
+                      magRefDsoMag: nextDsoMag,
+                    }));
+                  }}
                   className="w-full accent-cyan-600"
                 />
               </div>
@@ -685,36 +882,109 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   />
                 </label>
                 <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
-                  <span className="flex items-center gap-1">
-                    <Crosshair className="w-3 h-3 text-cyan-600 dark:text-cyan-400" />
-                    <span>중심 십자선</span>
-                  </span>
+                  <span>별자리 경계</span>
                   <input
                     type="checkbox"
-                    checked={config.showCenterCrosshair}
+                    checked={config.showConstellationBoundaries}
                     onChange={(e) =>
                       onChangeConfig((p) => ({
                         ...p,
-                        showCenterCrosshair: e.target.checked,
+                        showConstellationBoundaries: e.target.checked,
                       }))
                     }
                     className="rounded accent-cyan-600"
                   />
                 </label>
-                <label className="col-span-2 flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer pt-1 border-t border-slate-200/80 dark:border-slate-700/60">
-                  <span>성도 오른쪽 위 커서 위치 표시</span>
+                <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <span>은하수 배경</span>
                   <input
                     type="checkbox"
-                    checked={config.showCursorCoords}
+                    checked={config.showMilkyWayContours}
                     onChange={(e) =>
                       onChangeConfig((p) => ({
                         ...p,
-                        showCursorCoords: e.target.checked,
+                        showMilkyWayContours: e.target.checked,
                       }))
                     }
                     className="rounded accent-cyan-600"
                   />
                 </label>
+                <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <span>태양계 천체</span>
+                  <input
+                    type="checkbox"
+                    checked={config.showSolarSystem}
+                    onChange={(e) =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        showSolarSystem: e.target.checked,
+                      }))
+                    }
+                    className="rounded accent-cyan-600"
+                  />
+                </label>
+                <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <span>행성 위상·표면</span>
+                  <input
+                    type="checkbox"
+                    checked={config.showPlanetDetails ?? true}
+                    onChange={(e) =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        showPlanetDetails: e.target.checked,
+                      }))
+                    }
+                    className="rounded accent-cyan-600"
+                  />
+                </label>
+                <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <span>좌표 격자</span>
+                  <input
+                    type="checkbox"
+                    checked={config.showEquatorialGrid}
+                    onChange={(e) =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        showEquatorialGrid: e.target.checked,
+                      }))
+                    }
+                    className="rounded accent-cyan-600"
+                  />
+                </label>
+
+                <div className="col-span-2 pt-1.5 mt-0.5 border-t border-slate-200/80 dark:border-slate-700/60 space-y-1.5">
+                  <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+                    <span className="flex items-center gap-1">
+                      <Crosshair className="w-3 h-3 text-cyan-600 dark:text-cyan-400" />
+                      <span>중앙 십자선 표시</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={config.showCenterCrosshair}
+                      onChange={(e) =>
+                        onChangeConfig((p) => ({
+                          ...p,
+                          showCenterCrosshair: e.target.checked,
+                        }))
+                      }
+                      className="rounded accent-cyan-600"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer">
+                    <span>성도 오른쪽 위 커서 위치 표시</span>
+                    <input
+                      type="checkbox"
+                      checked={config.showCursorCoords}
+                      onChange={(e) =>
+                        onChangeConfig((p) => ({
+                          ...p,
+                          showCursorCoords: e.target.checked,
+                        }))
+                      }
+                      className="rounded accent-cyan-600"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -744,7 +1014,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                 <span>전체 천체 대상 종합 검색창</span>
               </span>
               <span className="text-[10px] font-mono font-normal text-slate-400">
-                항성·M·C·NGC·별자리
+                행성·위성·소행성·M·C·항성
               </span>
             </label>
             <div className="relative">
@@ -758,7 +1028,7 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                     handleSelectSidebarUnifiedItem(unifiedResults[0]);
                   }
                 }}
-                placeholder="전체 천체 통합 검색 (M42, 북극성, 베가, C14, 오리온...)"
+                placeholder="행성, 위성, 소행성, M42, 북극성..."
                 className="w-full pl-8 pr-7 py-1.5 text-xs rounded border border-cyan-500/40 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
               />
               {unifiedSearchQuery && (
@@ -807,40 +1077,51 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             )}
           </div>
 
-          {/* Segmented Switcher: Messier (110) | Caldwell (109) | Constellations (88) */}
-          <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg shrink-0">
+          {/* Segmented Switcher: Messier | Caldwell | Solar System | Constellations */}
+          <div className="grid grid-cols-4 gap-0.5 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg shrink-0">
             <button
               type="button"
               onClick={() => setFinderTab('messier')}
-              className={`py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+              className={`py-1.5 px-0.5 text-[10.5px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                 finderTab === 'messier'
-                  ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs'
+                  ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs font-semibold'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
               }`}
             >
-              메시에 (110)
+              메시에
             </button>
             <button
               type="button"
               onClick={() => setFinderTab('caldwell')}
-              className={`py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+              className={`py-1.5 px-0.5 text-[10.5px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                 finderTab === 'caldwell'
-                  ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs'
+                  ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs font-semibold'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
               }`}
             >
-              콜드웰 (109)
+              콜드웰
+            </button>
+            <button
+              type="button"
+              onClick={() => setFinderTab('solar')}
+              className={`py-1.5 px-0.5 text-[10.5px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                finderTab === 'solar'
+                  ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              }`}
+            >
+              태양계
             </button>
             <button
               type="button"
               onClick={() => setFinderTab('constellations')}
-              className={`py-1.5 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+              className={`py-1.5 px-0.5 text-[10.5px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                 finderTab === 'constellations'
-                  ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs'
+                  ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs font-semibold'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
               }`}
             >
-              88 별자리
+              별자리
             </button>
           </div>
 
@@ -889,6 +1170,28 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
             </div>
           )}
 
+          {finderTab === 'solar' && (
+            <div className="shrink-0">
+              <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                태양계 천체 바로가기 (행성 · 위성 · 소행성 {solarSystemBodies.length}개)
+              </label>
+              <select
+                value={selectedSolarId}
+                onChange={(e) => {
+                  const found = solarSystemBodies.find((b) => b.id === e.target.value);
+                  if (found) jumpToSolarBody(found);
+                }}
+                className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+              >
+                {solarSystemBodies.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.nameKo} ({b.nameEn}) · {b.mag.toFixed(1)}m
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {finderTab === 'constellations' && (
             <div className="shrink-0">
               <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
@@ -902,21 +1205,16 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   );
                   if (found) {
                     setSelectedConstellationCode(found.constellation);
-                    const [az, alt] = equatorialToHorizontal(
-                      found.raCenterHours * 15,
-                      found.decCenterDeg,
-                      config.observerLatDeg,
-                      lstDeg
-                    );
-                    onChangeConfig((prev) => ({
-                      ...prev,
-                      showConstellationLines: true,
-                      centerRaHours: found.raCenterHours,
-                      centerDecDeg: found.decCenterDeg,
-                      centerAzDeg: Number(az.toFixed(1)),
-                      centerAltDeg: Number(alt.toFixed(1)),
-                      fovDeg: 36,
-                    }));
+                    startSkySlew({
+                      currentConfig: config,
+                      onChangeConfig,
+                      targetRaHours: found.raCenterHours,
+                      targetDecDeg: found.decCenterDeg,
+                      targetFovDeg: 36,
+                      extraInitialPatch: {
+                        showConstellationLines: true,
+                      },
+                    });
                   }
                 }}
                 className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
@@ -942,6 +1240,8 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   ? 'M1~M110 번호, 이름, NGC, 별자리 검색...'
                   : finderTab === 'caldwell'
                   ? 'C1~C109 번호, 이름, NGC, 별자리 검색...'
+                  : finderTab === 'solar'
+                  ? '행성(목성, 토성), 위성(이오, 타이탄), 소행성(베스타)...'
                   : '88개 별자리 이름 또는 약자(Ori, UMa...) 검색...'
               }
               className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
@@ -1010,6 +1310,52 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                 </button>
               ))}
 
+            {finderTab === 'solar' &&
+              filteredSolarBodies.map((body) => {
+                const badgeText =
+                  body.kind === 'sun'
+                    ? '태양'
+                    : body.kind === 'moon'
+                    ? '달'
+                    : body.kind === 'planet'
+                    ? '행성'
+                    : body.kind === 'dwarf_planet'
+                    ? '왜행성'
+                    : body.kind === 'satellite'
+                    ? `${body.parentNameKo || ''} 위성`
+                    : '소행성';
+                return (
+                  <button
+                    key={body.id}
+                    type="button"
+                    onClick={() => jumpToSolarBody(body)}
+                    className={`w-full text-left px-3 py-2 rounded-lg border transition-colors cursor-pointer ${
+                      selectedSolarId === body.id
+                        ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/30'
+                        : 'border-slate-200 dark:border-slate-800 hover:border-emerald-500/60 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">
+                        <span className="font-mono text-emerald-600 dark:text-emerald-400 mr-1.5">
+                          [{badgeText}]
+                        </span>
+                        {body.nameKo} ({body.nameEn})
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-400 tabular-nums shrink-0 ml-1">
+                        {body.mag.toFixed(1)}m
+                      </span>
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5">
+                      {formatRaHours(body.raHours, true)} {formatDecDeg(body.decDeg, true)} ·{' '}
+                      {body.distanceAu < 0.01
+                        ? `${(body.distanceAu * 149597870.7).toFixed(0)}km`
+                        : `${body.distanceAu.toFixed(2)} AU`}
+                    </div>
+                  </button>
+                );
+              })}
+
             {finderTab === 'constellations' &&
               filteredConstellations.map((con) => (
                 <button
@@ -1017,21 +1363,16 @@ export const FChart3Sidebar: React.FC<FChart3SidebarProps> = ({
                   type="button"
                   onClick={() => {
                     setSelectedConstellationCode(con.constellation);
-                    const [az, alt] = equatorialToHorizontal(
-                      con.raCenterHours * 15,
-                      con.decCenterDeg,
-                      config.observerLatDeg,
-                      lstDeg
-                    );
-                    onChangeConfig((prev) => ({
-                      ...prev,
-                      showConstellationLines: true,
-                      centerRaHours: con.raCenterHours,
-                      centerDecDeg: con.decCenterDeg,
-                      centerAzDeg: Number(az.toFixed(1)),
-                      centerAltDeg: Number(alt.toFixed(1)),
-                      fovDeg: 36,
-                    }));
+                    startSkySlew({
+                      currentConfig: config,
+                      onChangeConfig,
+                      targetRaHours: con.raCenterHours,
+                      targetDecDeg: con.decCenterDeg,
+                      targetFovDeg: 36,
+                      extraInitialPatch: {
+                        showConstellationLines: true,
+                      },
+                    });
                   }}
                   className={`w-full text-left px-3 py-2 rounded-lg border transition-colors cursor-pointer ${
                     selectedConstellationCode === con.constellation

@@ -97,6 +97,9 @@ const BASE_BRIGHT_STARS: StarRecord[] = [
   s('UMi-epsilon', 'UMi', 'ε', 16.766, 82.037, 4.23, 0.90),
   s('UMi-zeta', 'UMi', 'ζ', 15.734, 77.794, 4.32, 0.04),
   s('UMi-eta', 'UMi', 'η', 16.292, 75.755, 4.95, 0.37),
+  s('UMi-theta', 'UMi', 'θ', 15.523, 77.349, 4.96, 1.59),
+  s('UMi-19', 'UMi', '19', 16.183, 75.878, 5.48, -0.04),
+  s('UMi-lambda', 'UMi', 'λ', 16.950, 89.038, 6.38, 1.66),
 
   // Ursa Major (큰곰자리)
   s('UMa-alpha', 'UMa', 'α', 11.062, 61.751, 1.79, 1.07, '두베', 'Dubhe', true),
@@ -314,19 +317,17 @@ export const BRIGHT_STARS: StarRecord[] = [
 export const CONSTELLATION_DATA: ConstellationStick[] = ALL_88_CONSTELLATIONS;
 
 /**
- * Generate a closed Milky Way Galactic Isophote Ribbon or Star Cloud Patch
+ * Generate seamless 360-degree North & South Galactic Isophote Ribbon edges
  */
-function buildGalacticBandPolygon(
-  lStart: number,
-  lEnd: number,
+function buildGalacticBandEdges(
   halfWidthDeg: number,
   wobbleAmpDeg = 2.0,
-  stepDeg = 6
-): Array<[number, number]> {
-  const upper: Array<[number, number]> = [];
-  const lower: Array<[number, number]> = [];
+  stepDeg = 3
+): [Array<[number, number]>, Array<[number, number]>] {
+  const north: Array<[number, number]> = [];
+  const south: Array<[number, number]> = [];
 
-  for (let l = lStart; l <= lEnd; l += stepDeg) {
+  for (let l = 0; l < 360; l += stepDeg) {
     const rad = (l * Math.PI) / 180;
     const bulgeFactor =
       1 +
@@ -336,15 +337,13 @@ function buildGalacticBandPolygon(
 
     const w = halfWidthDeg * bulgeFactor;
     const ripple = wobbleAmpDeg * Math.sin(rad * 4) * Math.cos(rad * 2.5);
-    upper.push(galacticToEquatorial(l % 360, w + ripple));
-    lower.push(galacticToEquatorial(l % 360, -w + ripple * 0.7));
+    north.push(galacticToEquatorial(l, w + ripple));
+    south.push(galacticToEquatorial(l, -w + ripple * 0.7));
   }
 
-  const loop = [...upper, ...lower.reverse()];
-  if (loop.length > 0) {
-    loop.push([...loop[0]]);
-  }
-  return loop;
+  if (north.length > 0) north.push([...north[0]]);
+  if (south.length > 0) south.push([...south[0]]);
+  return [north, south];
 }
 
 function buildGalacticCloudBlob(
@@ -353,7 +352,7 @@ function buildGalacticCloudBlob(
   lRadius: number,
   bRadius: number,
   irregularity = 0.18,
-  points = 28
+  points = 32
 ): Array<[number, number]> {
   const poly: Array<[number, number]> = [];
   for (let i = 0; i < points; i++) {
@@ -370,6 +369,9 @@ function buildGalacticCloudBlob(
   return poly;
 }
 
+const MW_LEVEL_1_BAND = buildGalacticBandEdges(12.5, 2.2, 3);
+const MW_LEVEL_2_BAND = buildGalacticBandEdges(6.8, 1.5, 3);
+
 /**
  * Multi-Level Vector Milky Way Isophote Contours (은하수 등고선)
  */
@@ -379,20 +381,16 @@ export const MILKY_WAY_CONTOURS: MilkyWayContourLevel[] = [
     level: 1,
     labelKo: '은하수 외곽 등고선 (Level 1 Halo)',
     labelEn: 'Outer Galactic Isophote (Level 1)',
-    polygons: [
-      buildGalacticBandPolygon(0, 180, 12.5, 2.2, 5),
-      buildGalacticBandPolygon(180, 360, 12.5, 2.2, 5),
-    ],
+    polygons: [MW_LEVEL_1_BAND[0], MW_LEVEL_1_BAND[1]],
+    bandRings: MW_LEVEL_1_BAND,
   },
   {
     id: 'mw-level-2',
     level: 2,
     labelKo: '은하수 중심 띠 등고선 (Level 2 Main Band)',
     labelEn: 'Intermediate Galactic Band (Level 2)',
-    polygons: [
-      buildGalacticBandPolygon(0, 180, 6.8, 1.5, 5),
-      buildGalacticBandPolygon(180, 360, 6.8, 1.5, 5),
-    ],
+    polygons: [MW_LEVEL_2_BAND[0], MW_LEVEL_2_BAND[1]],
+    bandRings: MW_LEVEL_2_BAND,
   },
   {
     id: 'mw-level-3',
@@ -565,7 +563,15 @@ function getDeepFieldTileStars(
   if (limitStarMag <= 10.5) return [];
 
   const tileSizeDeg =
-    fovDeg <= 6
+    fovDeg <= 0.08
+      ? 0.025
+      : fovDeg <= 0.25
+      ? 0.0625
+      : fovDeg <= 0.8
+      ? 0.2
+      : fovDeg <= 2.5
+      ? 0.5
+      : fovDeg <= 6
       ? 1.0
       : fovDeg <= 15
       ? 2.0
@@ -574,7 +580,7 @@ function getDeepFieldTileStars(
       : fovDeg <= 60
       ? 6.0
       : 10.0;
-  const maxRadius = Math.min(130, Math.max(maxRadiusDeg, fovDeg * 2.2 + tileSizeDeg));
+  const maxRadius = Math.min(130, Math.max(maxRadiusDeg, fovDeg * 1.8 + tileSizeDeg * 2));
   const minDec = Math.max(-89, centerDecDeg - maxRadius);
   const maxDec = Math.min(89, centerDecDeg + maxRadius);
 
@@ -584,7 +590,8 @@ function getDeepFieldTileStars(
 
   // Scale stars per tile by how deep past mag 10.5 the user has set (up to 14.0)
   const depthFraction = Math.min(1, (limitStarMag - 10.5) / 3.5);
-  const basePerTile = fovDeg <= 15 ? 14 : fovDeg <= 35 ? 8 : 5;
+  const basePerTile =
+    fovDeg <= 0.25 ? 6 : fovDeg <= 2.5 ? 8 : fovDeg <= 15 ? 14 : fovDeg <= 35 ? 8 : 5;
   const starsPerTile = Math.max(2, Math.round(depthFraction * basePerTile));
 
   const deepStars: StarRecord[] = [];
@@ -592,7 +599,21 @@ function getDeepFieldTileStars(
   for (let dIdx = decStartIdx; dIdx <= decEndIdx; dIdx++) {
     const tileDecMin = dIdx * tileSizeDeg - 90;
     const tileDecCenter = tileDecMin + tileSizeDeg * 0.5;
-    for (let rIdx = 0; rIdx < totalRaTiles; rIdx++) {
+    const nearPole = Math.abs(tileDecCenter) + maxRadius >= 89.2;
+    const cosDec = Math.max(0.08, Math.cos((tileDecCenter * Math.PI) / 180));
+    const raHalfSpanDeg = nearPole ? 180 : Math.min(180, (maxRadius + tileSizeDeg) / cosDec);
+
+    const raStartIdx =
+      raHalfSpanDeg >= 179.5
+        ? 0
+        : Math.floor((centerRaDeg - raHalfSpanDeg) / tileSizeDeg);
+    const raEndIdx =
+      raHalfSpanDeg >= 179.5
+        ? totalRaTiles - 1
+        : Math.floor((centerRaDeg + raHalfSpanDeg) / tileSizeDeg);
+
+    for (let rawR = raStartIdx; rawR <= raEndIdx; rawR++) {
+      const rIdx = ((rawR % totalRaTiles) + totalRaTiles) % totalRaTiles;
       const tileRaMin = rIdx * tileSizeDeg;
       const tileRaCenter = tileRaMin + tileSizeDeg * 0.5;
 
@@ -603,7 +624,7 @@ function getDeepFieldTileStars(
         continue;
       }
 
-      const tileSeed = ((dIdx + 500) * 73856093) ^ ((rIdx + 100) * 19349663);
+      const tileSeed = ((dIdx + 5000) * 73856093) ^ ((rIdx + 1000) * 19349663);
       const rng = seededRandom(tileSeed);
 
       for (let k = 0; k < starsPerTile; k++) {
@@ -663,12 +684,19 @@ export function getVisibleStars(
   limitStarMag: number,
   aspectDiagonalFactor = 2.6
 ): StarRecord[] {
-  const fovRad = (Math.max(1.0, Math.min(165, fovDeg)) * Math.PI) / 180;
+  const fovRad = (Math.max(0.015, Math.min(165, fovDeg)) * Math.PI) / 180;
   const stereographicCornerDeg =
     ((2 * Math.atan(2 * aspectDiagonalFactor * Math.tan(fovRad / 4))) * 180) / Math.PI;
   const maxRadius = Math.min(
     180,
     Math.max(fovDeg * aspectDiagonalFactor + 20, stereographicCornerDeg + 16)
+  );
+  const deepRadius = Math.min(
+    130,
+    Math.max(
+      fovDeg * aspectDiagonalFactor + Math.min(8, Math.max(0.15, fovDeg * 0.5)),
+      stereographicCornerDeg + Math.min(6, Math.max(0.15, fovDeg * 0.4))
+    )
   );
 
   const bright = BRIGHT_STARS.filter(
@@ -690,7 +718,7 @@ export function getVisibleStars(
 
   const deepTileStars =
     limitStarMag > 10.5 && fovDeg <= 65
-      ? getDeepFieldTileStars(centerRaDeg, centerDecDeg, fovDeg, limitStarMag, maxRadius)
+      ? getDeepFieldTileStars(centerRaDeg, centerDecDeg, fovDeg, limitStarMag, deepRadius)
       : [];
 
   return [...bright, ...proc, ...deepTileStars];

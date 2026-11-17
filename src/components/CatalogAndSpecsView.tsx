@@ -3,12 +3,10 @@ import {
   Calendar,
   Check,
   Compass,
-  Copy,
   MapPin,
   Search,
   Sliders,
   Sparkles,
-  Terminal,
   X,
 } from 'lucide-react';
 import {
@@ -19,14 +17,13 @@ import {
   MESSIER_CATALOG,
 } from '../data/astronomyData';
 import {
-  AtlasGeneratorOptions,
   ConstellationStick,
   DSORecord,
   FChart3Config,
+  SolarSystemBodyRecord,
   StarRecord,
 } from '../types/astronomy';
 import {
-  buildFchart3CliCommand,
   computeLstDeg,
   equatorialToHorizontal,
   formatAltDeg,
@@ -36,18 +33,22 @@ import {
   horizontalToEquatorial,
   OBSERVER_LOCATION_PRESETS,
 } from '../utils/atlasGenerator';
+import {
+  computeSolarSystemBodies,
+  getRecommendedSolarFov,
+} from '../utils/solarSystemEphemeris';
 
 interface CatalogAndSpecsViewProps {
-  mode: 'catalog' | 'specs' | 'settings';
+  mode: 'catalog' | 'settings';
   config: FChart3Config;
   onChangeConfig: (updater: (prev: FChart3Config) => FChart3Config) => void;
-  atlasOptions: AtlasGeneratorOptions;
   onJumpToTarget: (
     raHours: number,
     decDeg: number,
     fovDeg: number,
     dso?: DSORecord,
-    star?: StarRecord
+    star?: StarRecord,
+    solar?: SolarSystemBodyRecord
   ) => void;
 }
 
@@ -79,6 +80,19 @@ type UnifiedSearchResult =
       star: StarRecord;
     }
   | {
+      kind: 'solar';
+      categoryLabel: string;
+      badgeColor: string;
+      id: string;
+      titleKo: string;
+      subtitle: string;
+      raHours: number;
+      decDeg: number;
+      mag: number;
+      fovDeg: number;
+      solar: SolarSystemBodyRecord;
+    }
+  | {
       kind: 'constellation';
       categoryLabel: string;
       badgeColor: string;
@@ -95,31 +109,28 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
   mode,
   config,
   onChangeConfig,
-  atlasOptions,
   onJumpToTarget,
 }) => {
   const [filterType, setFilterType] = useState<
-    'all' | 'messier' | 'caldwell' | 'nebula' | 'galaxy' | 'cluster'
+    'all' | 'messier' | 'caldwell' | 'solar' | 'nebula' | 'galaxy' | 'cluster'
   >('all');
-  const [finderTab, setFinderTab] = useState<'messier' | 'caldwell' | 'constellations'>('messier');
+  const [finderTab, setFinderTab] = useState<'messier' | 'caldwell' | 'solar' | 'constellations'>('messier');
   const [selectedMessierId, setSelectedMessierId] = useState<string>('M1');
   const [selectedCaldwellId, setSelectedCaldwellId] = useState<string>('C1');
+  const [selectedSolarId, setSelectedSolarId] = useState<string>('jupiter');
   const [selectedConstellationCode, setSelectedConstellationCode] = useState<string>('Ori');
   const [unifiedSearchQuery, setUnifiedSearchQuery] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const cliCommands = buildFchart3CliCommand(config, atlasOptions);
+  const solarSystemBodies = useMemo<SolarSystemBodyRecord[]>(
+    () => computeSolarSystemBodies(config.observationDateTime),
+    [config.observationDateTime]
+  );
+
   const lstDeg = useMemo(
     () => computeLstDeg(config.observationDateTime, config.observerLonDeg),
     [config.observationDateTime, config.observerLonDeg]
   );
-
-  const handleCopy = (text: string, key: string) => {
-    navigator.clipboard?.writeText(text);
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey(null), 1800);
-  };
 
   const handleSwitchCoordinateSystem = (targetMode: 'equatorial' | 'horizontal') => {
     if (targetMode === config.coordinateSystem) return;
@@ -218,10 +229,69 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
     return map;
   }, []);
 
-  // Unified All-Sky Search Results (Stars + Messier + Caldwell + Extended Nebulae + 88 Constellations)
+  // Unified All-Sky Search Results (Solar System + Stars + Messier + Caldwell + Extended Nebulae + 88 Constellations)
   const unifiedResults = useMemo<UnifiedSearchResult[]>(() => {
     if (!uq) return [];
     const results: UnifiedSearchResult[] = [];
+
+    // 0. Solar System Bodies (Sun, Moon, Planets, Satellites, Dwarf Planets, Asteroids)
+    for (const body of solarSystemBodies) {
+      const hay = [
+        body.id,
+        body.nameKo,
+        body.nameEn,
+        body.parentNameKo || '',
+        body.descriptionKo,
+        body.kind === 'planet'
+          ? '행성 planet'
+          : body.kind === 'satellite'
+          ? '위성 moon satellite'
+          : body.kind === 'asteroid'
+          ? '소행성 asteroid'
+          : body.kind === 'dwarf_planet'
+          ? '왜행성 dwarf planet'
+          : body.kind,
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      if (hay.includes(uq)) {
+        const badgeLabel =
+          body.kind === 'sun'
+            ? '태양'
+            : body.kind === 'moon'
+            ? '달'
+            : body.kind === 'planet'
+            ? '행성'
+            : body.kind === 'dwarf_planet'
+            ? '왜행성'
+            : body.kind === 'satellite'
+            ? `${body.parentNameKo || ''} 위성`
+            : '소행성';
+        results.push({
+          kind: 'solar',
+          categoryLabel: badgeLabel,
+          badgeColor:
+            body.kind === 'planet' || body.kind === 'sun'
+              ? 'bg-amber-950/80 text-amber-300 border-amber-700/60'
+              : body.kind === 'satellite'
+              ? 'bg-sky-950/80 text-sky-300 border-sky-700/60'
+              : 'bg-violet-950/80 text-violet-300 border-violet-700/60',
+          id: `solar-${body.id}`,
+          titleKo: `${body.nameKo} (${body.nameEn})`,
+          subtitle: `${badgeLabel} · ${body.mag.toFixed(1)}m · ${
+            body.distanceAu < 0.01
+              ? `${(body.distanceAu * 149597870.7).toFixed(0)} km`
+              : `${body.distanceAu.toFixed(2)} AU`
+          }`,
+          raHours: body.raHours,
+          decDeg: body.decDeg,
+          mag: body.mag,
+          fovDeg: getRecommendedSolarFov(body),
+          solar: body,
+        });
+      }
+    }
 
     // 1. Named & Bright Stars
     for (const star of BRIGHT_STARS) {
@@ -326,16 +396,19 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
       }
     }
 
-    return results.slice(0, 60);
-  }, [uq, constellationNameMap]);
+    return results.slice(0, 65);
+  }, [uq, constellationNameMap, solarSystemBodies]);
 
   const handleSelectUnifiedResult = (item: UnifiedSearchResult) => {
     if (item.kind === 'dso') {
       if (item.dso.messierId) setSelectedMessierId(item.dso.id);
       if (item.dso.caldwellId) setSelectedCaldwellId(item.dso.id);
-      onJumpToTarget(item.raHours, item.decDeg, item.fovDeg, item.dso, undefined);
+      onJumpToTarget(item.raHours, item.decDeg, item.fovDeg, item.dso, undefined, undefined);
     } else if (item.kind === 'star') {
-      onJumpToTarget(item.raHours, item.decDeg, item.fovDeg, undefined, item.star);
+      onJumpToTarget(item.raHours, item.decDeg, item.fovDeg, undefined, item.star, undefined);
+    } else if (item.kind === 'solar') {
+      setSelectedSolarId(item.solar.id);
+      onJumpToTarget(item.raHours, item.decDeg, item.fovDeg, undefined, undefined, item.solar);
     } else {
       setSelectedConstellationCode(item.constellation.constellation);
       onJumpToTarget(item.raHours, item.decDeg, item.fovDeg);
@@ -357,21 +430,6 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
       </div>
 
       <div className="space-y-3 pt-1">
-        <label className="flex items-center justify-between text-sm text-slate-200 cursor-pointer py-0.5 hover:text-white transition-colors">
-          <span>중심 십자선 표시 (Center Crosshair)</span>
-          <input
-            type="checkbox"
-            checked={config.showCenterCrosshair}
-            onChange={(e) =>
-              onChangeConfig((p) => ({
-                ...p,
-                showCenterCrosshair: e.target.checked,
-              }))
-            }
-            className="w-4 h-4 rounded accent-cyan-500 cursor-pointer"
-          />
-        </label>
-
         <label className="flex items-center justify-between text-sm text-slate-200 cursor-pointer py-0.5 hover:text-white transition-colors">
           <span>은하수 다중 등고선 (Milky Way Contours)</span>
           <input
@@ -475,6 +533,36 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
         </label>
 
         <label className="flex items-center justify-between text-sm text-slate-200 cursor-pointer py-0.5 hover:text-white transition-colors">
+          <span>태양계 천체 표시 (행성 · 주요 위성 · 소행성)</span>
+          <input
+            type="checkbox"
+            checked={config.showSolarSystem}
+            onChange={(e) =>
+              onChangeConfig((p) => ({
+                ...p,
+                showSolarSystem: e.target.checked,
+              }))
+            }
+            className="w-4 h-4 rounded accent-cyan-500 cursor-pointer"
+          />
+        </label>
+
+        <label className="flex items-center justify-between text-sm text-slate-200 cursor-pointer py-0.5 hover:text-white transition-colors">
+          <span>행성 위상 · 표면 상세 묘사 (Phases &amp; Surface Features)</span>
+          <input
+            type="checkbox"
+            checked={config.showPlanetDetails ?? true}
+            onChange={(e) =>
+              onChangeConfig((p) => ({
+                ...p,
+                showPlanetDetails: e.target.checked,
+              }))
+            }
+            className="w-4 h-4 rounded accent-cyan-500 cursor-pointer"
+          />
+        </label>
+
+        <label className="flex items-center justify-between text-sm text-slate-200 cursor-pointer py-0.5 hover:text-white transition-colors">
           <span>콜드웰 천체 표시 (Caldwell Objects · C1–C109 전체)</span>
           <input
             type="checkbox"
@@ -509,7 +597,7 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
         </label>
 
         <label className="flex items-center justify-between text-sm text-slate-200 cursor-pointer py-0.5 hover:text-white transition-colors">
-          <span>지평좌표계 지상 및 지평선 표시 (Horizon & Ground)</span>
+          <span>지평선 (Horizon)</span>
           <input
             type="checkbox"
             checked={config.showHorizonGround}
@@ -604,28 +692,58 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
         </div>
       </div>
 
-      {/* Ground / Horizon Toggle */}
-      <label className="flex items-center justify-between p-3 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 text-xs text-slate-800 dark:text-slate-200 cursor-pointer">
-        <div>
-          <div className="font-semibold text-emerald-900 dark:text-emerald-300">
-            지평좌표계 전환 시 지상(Ground) 및 방위점(N·E·S·W) 표시
+      {/* Ground / Horizon Toggle + Position Slider */}
+      <div className="p-3 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/70 text-xs text-slate-800 dark:text-slate-200 space-y-2">
+        <label className="flex items-center justify-between cursor-pointer">
+          <div>
+            <div className="font-semibold text-emerald-900 dark:text-emerald-300">
+              지평선 (Horizon &amp; 방위점 N·E·S·W 표시)
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+              지평선 아래 하늘을 가리고 8방위 나침반을 표시합니다
+            </div>
           </div>
-          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-            고도 0° 이하의 지평선 아래 하늘을 지상 마스크로 가리고 8방위 나침반을 표시합니다
+          <input
+            type="checkbox"
+            checked={config.showHorizonGround}
+            onChange={(e) =>
+              onChangeConfig((p) => ({
+                ...p,
+                showHorizonGround: e.target.checked,
+              }))
+            }
+            className="w-4 h-4 rounded accent-emerald-600 cursor-pointer shrink-0 ml-3"
+          />
+        </label>
+
+        <div className="pt-2 border-t border-emerald-200/70 dark:border-emerald-800/50 space-y-1">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="font-medium text-emerald-900 dark:text-emerald-300">
+              지평선 위치 (지평선을 아래로 내려 위쪽 별 더 보기)
+            </span>
+            <span className="font-mono font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">
+              {(config.horizonAltDeg ?? 0) === 0
+                ? '0° (현재)'
+                : `${(config.horizonAltDeg ?? 0).toFixed(0)}°`}
+            </span>
           </div>
+          <input
+            type="range"
+            min={-85}
+            max={0}
+            step={1}
+            value={config.horizonAltDeg ?? 0}
+            disabled={!config.showHorizonGround}
+            onChange={(e) =>
+              onChangeConfig((p) => ({
+                ...p,
+                horizonAltDeg: Number(e.target.value),
+              }))
+            }
+            className="w-full accent-emerald-600 disabled:opacity-40 cursor-pointer"
+          />
         </div>
-        <input
-          type="checkbox"
-          checked={config.showHorizonGround}
-          onChange={(e) =>
-            onChangeConfig((p) => ({
-              ...p,
-              showHorizonGround: e.target.checked,
-            }))
-          }
-          className="w-4 h-4 rounded accent-emerald-600 cursor-pointer shrink-0 ml-3"
-        />
-      </label>
+      </div>
 
       {/* Observation Date & Time */}
       <div className="pt-1">
@@ -774,6 +892,372 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
     </div>
   );
 
+  /**
+   * Reusable Finder Reticle & Telescope/Eyepiece Optics Card
+   */
+  const renderFinderReticleAndOpticsCard = () => {
+    const fTel = config.telescopeFocalLengthMm || 1000;
+    const fEye = config.eyepieceFocalLengthMm || 25;
+    const afov = config.eyepieceAfovDeg || 68;
+    const magnification = Number((fTel / fEye).toFixed(1));
+    const calculatedTfov = Number(((afov * fEye) / fTel).toFixed(2));
+
+    return (
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-amber-500" />
+            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+              시야 링 및 망원경·아이피스 시야각 설정
+            </h3>
+          </div>
+          <span className="text-[11px] font-mono text-amber-500 font-semibold">
+            FINDER RETICLE
+          </span>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+            시야 링 선택 (중복 선택하여 누적 표시 가능)
+          </label>
+          {(() => {
+            const activeList: Array<'telrad' | 'binoculars_7x50' | 'eyepiece_afov'> = Array.isArray(
+              config.activeReticles
+            )
+              ? config.activeReticles
+              : config.reticleMode !== 'none' && config.reticleMode !== 'ccd_sensor'
+              ? [config.reticleMode]
+              : [];
+            const toggleItem = (id: 'telrad' | 'binoculars_7x50' | 'eyepiece_afov') => {
+              onChangeConfig((prev) => {
+                const cur: Array<'telrad' | 'binoculars_7x50' | 'eyepiece_afov'> = Array.isArray(
+                  prev.activeReticles
+                )
+                  ? prev.activeReticles
+                  : prev.reticleMode !== 'none' && prev.reticleMode !== 'ccd_sensor'
+                  ? [prev.reticleMode]
+                  : [];
+                const next = cur.includes(id)
+                  ? cur.filter((x) => x !== id)
+                  : [...cur, id];
+                return {
+                  ...prev,
+                  activeReticles: next,
+                  reticleMode: next[0] ?? 'none',
+                };
+              });
+            };
+            return (
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeConfig((prev) => ({
+                      ...prev,
+                      showCenterCrosshair: !prev.showCenterCrosshair,
+                    }))
+                  }
+                  className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded border transition-colors cursor-pointer ${
+                    config.showCenterCrosshair
+                      ? 'border-cyan-500 bg-cyan-50/70 dark:bg-cyan-950/40 text-slate-900 dark:text-white font-semibold'
+                      : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/60'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-full border border-cyan-500"
+                      style={{
+                        backgroundColor: config.showCenterCrosshair
+                          ? '#06B6D4'
+                          : 'transparent',
+                      }}
+                    />
+                    <span>중앙 십자선</span>
+                  </span>
+                  <span
+                    className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                      config.showCenterCrosshair
+                        ? 'bg-cyan-600 border-cyan-500 text-white'
+                        : 'border-slate-300 dark:border-slate-600'
+                    }`}
+                  >
+                    {config.showCenterCrosshair && (
+                      <Check className="w-3 h-3 stroke-[2.5]" />
+                    )}
+                  </span>
+                </button>
+                {(
+                  [
+                    {
+                      id: 'telrad',
+                      label: 'Telrad 등배파인더 (0.5° · 2.0° · 4.0° 3중 동심원)',
+                      dotColor: '#EF4444',
+                    },
+                    {
+                      id: 'binoculars_7x50',
+                      label: '7×50 쌍안경 시야 링 (7.0° 점선 원)',
+                      dotColor: '#06B6D4',
+                    },
+                    {
+                      id: 'eyepiece_afov',
+                      label: `망원경 아이피스 시야 링 (${config.customEyepieceFovDeg.toFixed(2)}°)`,
+                      dotColor: '#F59E0B',
+                    },
+                  ] as Array<{
+                    id: 'telrad' | 'binoculars_7x50' | 'eyepiece_afov';
+                    label: string;
+                    dotColor: string;
+                  }>
+                ).map((item) => {
+                  const checked = activeList.includes(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => toggleItem(item.id)}
+                      className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded border transition-colors cursor-pointer ${
+                        checked
+                          ? 'border-cyan-500 bg-cyan-50/70 dark:bg-cyan-950/40 text-slate-900 dark:text-white font-semibold'
+                          : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/60'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="inline-block w-2.5 h-2.5 rounded-full border"
+                          style={{
+                            borderColor: item.dotColor,
+                            backgroundColor: checked ? item.dotColor : 'transparent',
+                          }}
+                        />
+                        <span>{item.label}</span>
+                      </span>
+                      <span
+                        className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                          checked
+                            ? 'bg-cyan-600 border-cyan-500 text-white'
+                            : 'border-slate-300 dark:border-slate-600'
+                        }`}
+                      >
+                        {checked && <Check className="w-3 h-3 stroke-[2.5]" />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+
+        {(Array.isArray(config.activeReticles)
+          ? config.activeReticles.includes('eyepiece_afov')
+          : config.reticleMode === 'eyepiece_afov') && (
+          <div className="p-4 rounded-lg border border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20 space-y-3.5">
+            <div className="text-xs font-semibold text-amber-900 dark:text-amber-300">
+              아이피스 시야각(TFOV) 설정 방식
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 p-1 bg-amber-100/60 dark:bg-slate-800 rounded-lg">
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeConfig((p) => ({ ...p, eyepieceInputMode: 'direct' }))
+                }
+                className={`py-2 px-3 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                  config.eyepieceInputMode !== 'telescope'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                시야각 바로 넣기 (직접 입력)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeConfig((p) => ({
+                    ...p,
+                    eyepieceInputMode: 'telescope',
+                    telescopeFocalLengthMm: fTel,
+                    eyepieceFocalLengthMm: fEye,
+                    eyepieceAfovDeg: afov,
+                    customEyepieceFovDeg: calculatedTfov,
+                  }));
+                }}
+                className={`py-2 px-3 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                  config.eyepieceInputMode === 'telescope'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                망원경과 아이피스로 계산
+              </button>
+            </div>
+
+            {config.eyepieceInputMode !== 'telescope' ? (
+              <div className="space-y-2 pt-1">
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                  아이피스 실시야각 직접 입력 (True Field of View, °)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={20}
+                    step={0.1}
+                    value={config.customEyepieceFovDeg}
+                    onChange={(e) =>
+                      onChangeConfig((p) => ({
+                        ...p,
+                        customEyepieceFovDeg: Math.max(
+                          0.1,
+                          Math.min(20, Number(e.target.value) || 1.0)
+                        ),
+                      }))
+                    }
+                    className="w-32 px-3 py-1.5 text-xs font-mono font-bold rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400"
+                  />
+                  <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                    도(°)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  성도 중앙에 해당 시야각의 주황색 원환이 실제 밤하늘 축척 크기로 표시됩니다.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-700 dark:text-slate-300 mb-1">
+                      망원경 초점거리 (Focal Length, mm)
+                    </label>
+                    <input
+                      type="number"
+                      min={50}
+                      max={5000}
+                      step={50}
+                      value={config.telescopeFocalLengthMm || 1000}
+                      onChange={(e) => {
+                        const nextTel = Math.max(50, Number(e.target.value) || 1000);
+                        const curEye = config.eyepieceFocalLengthMm || 25;
+                        const curAfov = config.eyepieceAfovDeg || 68;
+                        const nextTfov = Number(((curAfov * curEye) / nextTel).toFixed(2));
+                        onChangeConfig((p) => ({
+                          ...p,
+                          telescopeFocalLengthMm: nextTel,
+                          customEyepieceFovDeg: nextTfov,
+                        }));
+                      }}
+                      className="w-full px-3 py-1.5 text-xs font-mono rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-700 dark:text-slate-300 mb-1">
+                      아이피스 초점거리 (Focal Length, mm)
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={60}
+                      step={1}
+                      value={config.eyepieceFocalLengthMm || 25}
+                      onChange={(e) => {
+                        const nextEye = Math.max(1, Number(e.target.value) || 25);
+                        const curTel = config.telescopeFocalLengthMm || 1000;
+                        const curAfov = config.eyepieceAfovDeg || 68;
+                        const nextTfov = Number(((curAfov * nextEye) / curTel).toFixed(2));
+                        onChangeConfig((p) => ({
+                          ...p,
+                          eyepieceFocalLengthMm: nextEye,
+                          customEyepieceFovDeg: nextTfov,
+                        }));
+                      }}
+                      className="w-full px-3 py-1.5 text-xs font-mono rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-slate-700 dark:text-slate-300">
+                      아이피스 겉보기 시야각 (Apparent FOV, °)
+                    </label>
+                    <div className="flex items-center gap-1">
+                      {[50, 68, 82, 100].map((deg) => (
+                        <button
+                          key={`settings-afov-${deg}`}
+                          type="button"
+                          onClick={() => {
+                            const curTel = config.telescopeFocalLengthMm || 1000;
+                            const curEye = config.eyepieceFocalLengthMm || 25;
+                            const nextTfov = Number(((deg * curEye) / curTel).toFixed(2));
+                            onChangeConfig((p) => ({
+                              ...p,
+                              eyepieceAfovDeg: deg,
+                              customEyepieceFovDeg: nextTfov,
+                            }));
+                          }}
+                          className={`px-1.5 py-0.5 text-[10px] rounded border cursor-pointer ${
+                            (config.eyepieceAfovDeg || 68) === deg
+                              ? 'bg-amber-500 text-white border-amber-600 font-bold'
+                              : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                          }`}
+                        >
+                          {deg}°
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <input
+                    type="number"
+                    min={20}
+                    max={120}
+                    step={1}
+                    value={config.eyepieceAfovDeg || 68}
+                    onChange={(e) => {
+                      const nextAfov = Math.max(10, Math.min(130, Number(e.target.value) || 68));
+                      const curTel = config.telescopeFocalLengthMm || 1000;
+                      const curEye = config.eyepieceFocalLengthMm || 25;
+                      const nextTfov = Number(((nextAfov * curEye) / curTel).toFixed(2));
+                      onChangeConfig((p) => ({
+                        ...p,
+                        eyepieceAfovDeg: nextAfov,
+                        customEyepieceFovDeg: nextTfov,
+                      }));
+                    }}
+                    className="w-full px-3 py-1.5 text-xs font-mono rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+
+                {/* Calculation Output Box */}
+                <div className="p-3 rounded-lg bg-amber-100/70 dark:bg-slate-800 border border-amber-300 dark:border-amber-700/60 flex items-center justify-between text-xs font-mono">
+                  <div>
+                    <span className="text-slate-500 dark:text-slate-400">배율: </span>
+                    <span className="font-bold text-amber-700 dark:text-amber-300 text-sm">
+                      {magnification}배
+                    </span>
+                    <span className="text-[11px] text-slate-400 ml-1">
+                      ({fTel}mm ÷ {fEye}mm)
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 dark:text-slate-400">실시야각(TFOV): </span>
+                    <span className="font-bold text-amber-700 dark:text-amber-300 text-sm">
+                      {config.customEyepieceFovDeg.toFixed(2)}°
+                    </span>
+                    <span className="text-[11px] text-slate-400 ml-1">
+                      ({afov}° ÷ {magnification})
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (mode === 'catalog') {
     const filteredMessier = !q
       ? MESSIER_CATALOG
@@ -795,6 +1279,17 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
             d.nameEn.toLowerCase().includes(q) ||
             (d.catalogAlt && d.catalogAlt.toLowerCase().includes(q)) ||
             d.constellation.toLowerCase().includes(q)
+        );
+
+    const filteredSolarBodies = !q
+      ? solarSystemBodies
+      : solarSystemBodies.filter(
+          (b) =>
+            b.id.toLowerCase().includes(q) ||
+            b.nameKo.toLowerCase().includes(q) ||
+            b.nameEn.toLowerCase().includes(q) ||
+            (b.parentNameKo && b.parentNameKo.toLowerCase().includes(q)) ||
+            b.kind.toLowerCase().includes(q)
         );
 
     const filteredConstellations = !q
@@ -844,7 +1339,7 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
               <label className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
                 <span>
-                  전체 천체 대상 종합 검색창 (항성 · 메시에 110 · 콜드웰 109 · NGC/IC 성운·은하 · 88 별자리 통합 검색)
+                  전체 천체 대상 종합 검색창 (태양계 행성·위성·소행성 · 항성 · 메시에 110 · 콜드웰 109 · 88 별자리 통합 검색)
                 </span>
               </label>
               <span className="text-[11px] font-mono text-slate-400">
@@ -864,7 +1359,7 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
                       handleSelectUnifiedResult(unifiedResults[0]);
                     }
                   }}
-                  placeholder="전체 천체 통합 검색 (예: M42, 오리온 대성운, 안드로메다, 북극성, 시리우스, 베가, C14, NGC 7000, 백조자리...)"
+                  placeholder="전체 천체 통합 검색 (예: 목성, 타이탄, 이오, 베스타, 세레스, 명왕성, M42, 시리우스, 오리온...)"
                   className="w-full pl-10 pr-9 py-2.5 text-xs rounded-lg border border-cyan-500/40 bg-slate-950 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
                 />
                 {unifiedSearchQuery && (
@@ -932,8 +1427,8 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
             )}
           </div>
 
-          {/* 2. Segmented Switcher: Messier (110) | Caldwell (109) | Constellations (88) */}
-          <div className="grid grid-cols-3 gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg">
+          {/* 2. Segmented Switcher: Messier (110) | Caldwell (109) | Solar System | Constellations (88) */}
+          <div className="grid grid-cols-4 gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg">
             <button
               type="button"
               onClick={() => setFinderTab('messier')}
@@ -955,6 +1450,17 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
               }`}
             >
               콜드웰 (109)
+            </button>
+            <button
+              type="button"
+              onClick={() => setFinderTab('solar')}
+              className={`py-2 px-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                finderTab === 'solar'
+                  ? 'bg-slate-950 text-emerald-400 shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              태양계 ({solarSystemBodies.length})
             </button>
             <button
               type="button"
@@ -1021,6 +1527,33 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
               </div>
             )}
 
+            {finderTab === 'solar' && (
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1.5">
+                  태양계 행성 · 주요 위성 · 소행성 바로가기 ({solarSystemBodies.length}개)
+                </label>
+                <select
+                  value={selectedSolarId}
+                  onChange={(e) => {
+                    const found = solarSystemBodies.find((b) => b.id === e.target.value);
+                    if (found) {
+                      setSelectedSolarId(found.id);
+                      const fov = getRecommendedSolarFov(found);
+                      onJumpToTarget(found.raHours, found.decDeg, fov, undefined, undefined, found);
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-700 bg-slate-900 text-slate-100"
+                >
+                  {solarSystemBodies.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.nameKo} ({b.nameEn}) · {b.mag.toFixed(1)}m · {formatRaHours(b.raHours, true)}{' '}
+                      {formatDecDeg(b.decDeg, true)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {finderTab === 'constellations' && (
               <div>
                 <label className="block text-[11px] text-slate-400 mb-1.5">
@@ -1060,6 +1593,8 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
                     ? 'M1~M110 번호, 이름, NGC, 별자리 검색...'
                     : finderTab === 'caldwell'
                     ? 'C1~C109 번호, 이름, NGC, 별자리 검색...'
+                    : finderTab === 'solar'
+                    ? '행성(목성, 토성), 위성(이오, 타이탄), 소행성(베스타, 세레스)...'
                     : '88개 별자리 이름 또는 약자(Ori, UMa...) 검색...'
                 }
                 className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-slate-700 bg-slate-900 text-slate-100 placeholder:text-slate-500"
@@ -1135,6 +1670,56 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
                 </button>
               ))}
 
+            {finderTab === 'solar' &&
+              filteredSolarBodies.map((body) => {
+                const badgeText =
+                  body.kind === 'sun'
+                    ? '태양'
+                    : body.kind === 'moon'
+                    ? '달'
+                    : body.kind === 'planet'
+                    ? '행성'
+                    : body.kind === 'dwarf_planet'
+                    ? '왜행성'
+                    : body.kind === 'satellite'
+                    ? `${body.parentNameKo || ''} 위성`
+                    : '소행성';
+                const targetFov = getRecommendedSolarFov(body);
+                return (
+                  <button
+                    key={body.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSolarId(body.id);
+                      onJumpToTarget(body.raHours, body.decDeg, targetFov, undefined, undefined, body);
+                    }}
+                    className={`w-full text-left px-3.5 py-2.5 rounded-lg border transition-colors cursor-pointer ${
+                      selectedSolarId === body.id
+                        ? 'border-emerald-500 bg-emerald-950/30'
+                        : 'border-slate-800 hover:border-emerald-500/60 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-100 truncate">
+                        <span className="font-mono text-emerald-400 mr-1.5">
+                          [{badgeText}]
+                        </span>
+                        {body.nameKo} ({body.nameEn})
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-400 tabular-nums shrink-0 ml-1">
+                        {body.mag.toFixed(1)}m
+                      </span>
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400 mt-1">
+                      {formatRaHours(body.raHours, true)} {formatDecDeg(body.decDeg, true)} ·{' '}
+                      {body.distanceAu < 0.01
+                        ? `${(body.distanceAu * 149597870.7).toFixed(0)}km`
+                        : `${body.distanceAu.toFixed(2)} AU`}
+                    </div>
+                  </button>
+                );
+              })}
+
             {finderTab === 'constellations' &&
               filteredConstellations.map((con) => (
                 <button
@@ -1186,6 +1771,7 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
               {(
                 [
                   { id: 'all', label: `전체 (${DSO_CATALOG.length})` },
+                  { id: 'solar', label: `태양계 (${solarSystemBodies.length})` },
                   { id: 'messier', label: `메시에 (110)` },
                   { id: 'caldwell', label: `콜드웰 (109)` },
                   { id: 'nebula', label: '성운' },
@@ -1210,67 +1796,136 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
           </div>
         </div>
 
-        {/* Deep-Sky Objects Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredDsos.map((dso) => (
-            <div
-              key={dso.id}
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between text-xs font-mono text-slate-500 dark:text-slate-400">
-                  <span>
-                    {dso.messierId ? (
-                      <strong className="text-cyan-600 dark:text-cyan-400">
-                        메시에 {dso.messierId}
-                      </strong>
-                    ) : dso.caldwellId ? (
-                      <strong className="text-amber-600 dark:text-amber-400">
-                        콜드웰 {dso.caldwellId}
-                      </strong>
-                    ) : (
-                      <strong>{dso.id}</strong>
-                    )}{' '}
-                    · {dso.catalogAlt || dso.constellation}
-                  </span>
-                  <span className="text-cyan-600 dark:text-cyan-400 font-semibold">
-                    {dso.mag.toFixed(1)} mag
-                  </span>
-                </div>
-                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mt-1">
-                  {dso.nameKo} ({dso.nameEn})
-                </h3>
-                <div className="mt-1 flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                  <span>RA {formatRaHours(dso.raHours, true)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>Dec {formatDecDeg(dso.decDeg, true)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    크기 {dso.sizeMajorArcmin}′×{dso.sizeMinorArcmin}′
-                  </span>
-                </div>
-                <p className="mt-2.5 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                  {dso.descriptionKo}
-                </p>
-              </div>
-
-              <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
-                <span className="text-[11px] font-mono text-slate-400">
-                  {dso.contourPolygons
-                    ? `다각형 벡터 등고선 (${dso.contourPolygons.length}개 루프)`
-                    : 'fchart3 표준 기호'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onJumpToTarget(dso.raHours, dso.decDeg, 16, dso)}
-                  className="px-3 py-1.5 rounded text-xs font-medium bg-slate-900 dark:bg-cyan-600 text-white hover:opacity-90 transition-opacity whitespace-nowrap cursor-pointer"
+        {/* Solar System Directory Cards when 'solar' filter is selected */}
+        {filterType === 'solar' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredSolarBodies.map((body) => {
+              const badgeText =
+                body.kind === 'sun'
+                  ? '태양 (Sun)'
+                  : body.kind === 'moon'
+                  ? '달 (Moon)'
+                  : body.kind === 'planet'
+                  ? '행성 (Planet)'
+                  : body.kind === 'dwarf_planet'
+                  ? '왜행성 (Dwarf Planet)'
+                  : body.kind === 'satellite'
+                  ? `${body.parentNameKo || ''} 위성 (Satellite)`
+                  : '소행성 (Asteroid)';
+              const targetFov = getRecommendedSolarFov(body);
+              return (
+                <div
+                  key={`card-${body.id}`}
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 flex flex-col justify-between"
                 >
-                  성도에서 보기
-                </button>
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-mono text-slate-500 dark:text-slate-400">
+                      <strong className="text-emerald-600 dark:text-emerald-400">
+                        {badgeText}
+                      </strong>
+                      <span className="text-cyan-600 dark:text-cyan-400 font-semibold">
+                        {body.mag.toFixed(1)} mag
+                      </span>
+                    </div>
+                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mt-1">
+                      {body.nameKo} ({body.nameEn})
+                    </h3>
+                    <div className="mt-1 flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                      <span>RA {formatRaHours(body.raHours, true)}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>Dec {formatDecDeg(body.decDeg, true)}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        {body.distanceAu < 0.01
+                          ? `${(body.distanceAu * 149597870.7).toFixed(0)} km`
+                          : `${body.distanceAu.toFixed(3)} AU`}
+                      </span>
+                    </div>
+                    <p className="mt-2.5 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                      {body.descriptionKo}
+                    </p>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-mono text-slate-400">
+                      시직경 {body.angularDiameterArcsec.toFixed(1)}″
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onJumpToTarget(body.raHours, body.decDeg, targetFov, undefined, undefined, body)
+                      }
+                      className="px-3 py-1.5 rounded text-xs font-medium bg-slate-900 dark:bg-emerald-600 text-white hover:opacity-90 transition-opacity whitespace-nowrap cursor-pointer"
+                    >
+                      성도에서 보기
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          /* Deep-Sky Objects Grid */
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredDsos.map((dso) => (
+              <div
+                key={dso.id}
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between text-xs font-mono text-slate-500 dark:text-slate-400">
+                    <span>
+                      {dso.messierId ? (
+                        <strong className="text-cyan-600 dark:text-cyan-400">
+                          메시에 {dso.messierId}
+                        </strong>
+                      ) : dso.caldwellId ? (
+                        <strong className="text-amber-600 dark:text-amber-400">
+                          콜드웰 {dso.caldwellId}
+                        </strong>
+                      ) : (
+                        <strong>{dso.id}</strong>
+                      )}{' '}
+                      · {dso.catalogAlt || dso.constellation}
+                    </span>
+                    <span className="text-cyan-600 dark:text-cyan-400 font-semibold">
+                      {dso.mag.toFixed(1)} mag
+                    </span>
+                  </div>
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mt-1">
+                    {dso.nameKo} ({dso.nameEn})
+                  </h3>
+                  <div className="mt-1 flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                    <span>RA {formatRaHours(dso.raHours, true)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Dec {formatDecDeg(dso.decDeg, true)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      크기 {dso.sizeMajorArcmin}′×{dso.sizeMinorArcmin}′
+                    </span>
+                  </div>
+                  <p className="mt-2.5 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                    {dso.descriptionKo}
+                  </p>
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-mono text-slate-400">
+                    {dso.contourPolygons
+                      ? `다각형 벡터 등고선 (${dso.contourPolygons.length}개 루프)`
+                      : 'fchart3 표준 기호'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onJumpToTarget(dso.raHours, dso.decDeg, 16, dso)}
+                    className="px-3 py-1.5 rounded text-xs font-medium bg-slate-900 dark:bg-cyan-600 text-white hover:opacity-90 transition-opacity whitespace-nowrap cursor-pointer"
+                  >
+                    성도에서 보기
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
 
         {/* Official IAU Constellations Directory */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
@@ -1304,248 +1959,121 @@ export const CatalogAndSpecsView: React.FC<CatalogAndSpecsViewProps> = ({
     );
   }
 
-  if (mode === 'settings') {
-    return (
-      <div className="space-y-6">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
-          <div className="text-xs font-mono text-cyan-600 dark:text-cyan-400">
-            FCHART3 VECTOR CARTOGRAPHY SETTINGS · COORDINATE SYSTEM · DATE & LOCATION
-          </div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mt-1">
-            성도 벡터 레이어 · 중심 십자선 · 좌표계 전환(적도/지평) · 관측 날짜 및 위치 설정
-          </h2>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-            중심 십자선, 은하수 등고선, 별자리 경계선, 성운 윤곽선 제어는 물론 적도좌표계(RA/Dec)와 지평좌표계(Az/Alt) 전환, 지평선 지상 표시, 관측 날짜·시간 및 관측지 위도/경도를 설정할 수 있습니다.
-          </p>
-        </div>
-
-        {/* Settings Only Grid (Messier & Caldwell Object Lists Removed from Settings) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left 6 Columns: Vector Cartography Layer Control Card + Label & Legend Settings */}
-          <div className="lg:col-span-6 space-y-5">
-            {renderVectorLayersControlCard()}
-
-            {/* Additional Display & Label Settings */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3.5">
-              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-                <span>라벨 표기 및 범례 상세 설정</span>
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">
-                  항성 이름 및 바이어 기호 표기 (Star Labels)
-                </label>
-                <select
-                  value={config.showStarLabels}
-                  onChange={(e) =>
-                    onChangeConfig((p) => ({
-                      ...p,
-                      showStarLabels: e.target.value as FChart3Config['showStarLabels'],
-                    }))
-                  }
-                  className="w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                >
-                  <option value="bayer_and_named">고유명칭 + 주요 바이어 기호 (권장)</option>
-                  <option value="all_named">모든 고유명칭 항성 표시</option>
-                  <option value="bright_only">1~2등성 밝은 별만 표시</option>
-                  <option value="none">항성 라벨 숨기기</option>
-                </select>
-              </div>
-
-              <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
-                <span>메시에 · 콜드웰 천체 번호 및 이름 라벨 표시</span>
-                <input
-                  type="checkbox"
-                  checked={config.showDsoLabels}
-                  onChange={(e) =>
-                    onChangeConfig((p) => ({
-                      ...p,
-                      showDsoLabels: e.target.checked,
-                    }))
-                  }
-                  className="rounded accent-cyan-600"
-                />
-              </label>
-
-              <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
-                <span>성도 하단 등급 스케일 범례 (Magnitude Legend) 표시</span>
-                <input
-                  type="checkbox"
-                  checked={config.showMagnitudeScale}
-                  onChange={(e) =>
-                    onChangeConfig((p) => ({
-                      ...p,
-                      showMagnitudeScale: e.target.checked,
-                    }))
-                  }
-                  className="rounded accent-cyan-600"
-                />
-              </label>
-
-              <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
-                <span>성도 하단 각거리 축척 막대 (Angular Scale Bar) 표시</span>
-                <input
-                  type="checkbox"
-                  checked={config.showScaleBar}
-                  onChange={(e) =>
-                    onChangeConfig((p) => ({
-                      ...p,
-                      showScaleBar: e.target.checked,
-                    }))
-                  }
-                  className="rounded accent-cyan-600"
-                />
-              </label>
-
-              <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
-                <span>성도 오른쪽 위 커서 위치 좌표 (Cursor Coordinates) 표시</span>
-                <input
-                  type="checkbox"
-                  checked={config.showCursorCoords}
-                  onChange={(e) =>
-                    onChangeConfig((p) => ({
-                      ...p,
-                      showCursorCoords: e.target.checked,
-                    }))
-                  }
-                  className="rounded accent-cyan-600"
-                />
-              </label>
-            </div>
-          </div>
-
-          {/* Right 6 Columns: Coordinate System, Horizon Ground, Date/Time & Observer Location Card */}
-          <div className="lg:col-span-6 space-y-5">
-            {renderCoordinateAndLocationCard()}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Specs & CLI Reference View (also includes Vector Cartography Layer Control Card + Coordinate/Date/Location Card right alongside CLI commands)
+  // Settings View (mode === 'settings')
   return (
     <div className="space-y-6">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
         <div className="text-xs font-mono text-cyan-600 dark:text-cyan-400">
-          SKYBBER/FCHART3 & FCHART3-ATLAS CARTOGRAPHIC SPECIFICATION
+          FCHART3 VECTOR CARTOGRAPHY SETTINGS · COORDINATE SYSTEM · DATE & LOCATION
         </div>
         <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mt-1">
-          D3.js 구면 벡터 투영 아키텍처 · 레이어 설정 및 Python fchart3 CLI 스크립트
+          성도 벡터 레이어 · 좌표계 전환(적도/지평) · 관측 날짜 및 위치 설정
         </h2>
         <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-          우측의 벡터 카토그래피 레이어 및 좌표계 설정을 변경하면 좌측의 <code className="font-mono text-xs">fchart3</code> / <code className="font-mono text-xs">fchart3-atlas</code> CLI 명령어와 대화형 벡터 성도에 즉시 반영됩니다.
+          은하수 등고선, 별자리 경계선, 성운 윤곽선 제어는 물론 적도좌표계(RA/Dec)와 지평좌표계(Az/Alt) 전환, 지평선 지상 표시, 관측 날짜·시간 및 관측지 위도/경도를 설정할 수 있습니다.
         </p>
-
-        <div className="mt-5 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left 7 Columns: Single & Multi-Page CLI Commands */}
-          <div className="lg:col-span-7 space-y-4">
-            {/* Single Chart CLI Command */}
-            <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 bg-slate-50 dark:bg-slate-950">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-mono font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5 text-cyan-500" />
-                  <span>단일 벡터 성도 CLI 명령어 (fchart3)</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(cliCommands.singleChartCmd, 'single')}
-                  className="px-2.5 py-1 rounded text-xs font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 cursor-pointer"
-                >
-                  {copiedKey === 'single' ? (
-                    <>
-                      <Check className="w-3 h-3 text-emerald-500" />
-                      <span>복사됨</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3 h-3" />
-                      <span>복사</span>
-                    </>
-                  )}
-                </button>
-              </div>
-              <pre className="text-xs font-mono text-slate-800 dark:text-cyan-300 overflow-x-auto leading-relaxed">
-                {cliCommands.singleChartCmd}
-              </pre>
-            </div>
-
-            {/* Multi-Page Atlas CLI Command */}
-            <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 bg-slate-50 dark:bg-slate-950">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-mono font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5 text-cyan-500" />
-                  <span>다중 페이지 성도집 CLI 명령어 (fchart3-atlas)</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(cliCommands.atlasCmd, 'atlas')}
-                  className="px-2.5 py-1 rounded text-xs font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 cursor-pointer"
-                >
-                  {copiedKey === 'atlas' ? (
-                    <>
-                      <Check className="w-3 h-3 text-emerald-500" />
-                      <span>복사됨</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3 h-3" />
-                      <span>복사</span>
-                    </>
-                  )}
-                </button>
-              </div>
-              <pre className="text-xs font-mono text-slate-800 dark:text-cyan-300 overflow-x-auto leading-relaxed">
-                {cliCommands.atlasCmd}
-              </pre>
-            </div>
-          </div>
-
-          {/* Right 5 Columns: Vector Cartography Layer Control Card + Coordinate/Location Card right next to CLI Specs */}
-          <div className="lg:col-span-5 space-y-5">
-            {renderVectorLayersControlCard()}
-            {renderCoordinateAndLocationCard()}
-          </div>
-        </div>
       </div>
 
-      {/* Cartographic Symbol & Layer Specification Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
-          <div className="text-xs font-mono text-cyan-600 dark:text-cyan-400">
-            01. MILKY WAY ISOPHOTES
+      {/* Settings Only Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left 6 Columns: Vector Cartography Layer Control Card + Label & Legend Settings */}
+        <div className="lg:col-span-6 space-y-5">
+          {renderVectorLayersControlCard()}
+
+          {/* Additional Display & Label Settings */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3.5">
+            <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+              <span>라벨 표기 및 범례 상세 설정</span>
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">
+                항성 이름 및 바이어 기호 표기 (Star Labels)
+              </label>
+              <select
+                value={config.showStarLabels}
+                onChange={(e) =>
+                  onChangeConfig((p) => ({
+                    ...p,
+                    showStarLabels: e.target.value as FChart3Config['showStarLabels'],
+                  }))
+                }
+                className="w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+              >
+                <option value="bayer_and_named">고유명칭 + 주요 바이어 기호 (권장)</option>
+                <option value="all_named">모든 고유명칭 항성 표시</option>
+                <option value="bright_only">1~2등성 밝은 별만 표시</option>
+                <option value="none">항성 라벨 숨기기</option>
+              </select>
+            </div>
+
+            <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
+              <span>메시에 · 콜드웰 천체 번호 및 이름 라벨 표시</span>
+              <input
+                type="checkbox"
+                checked={config.showDsoLabels}
+                onChange={(e) =>
+                  onChangeConfig((p) => ({
+                    ...p,
+                    showDsoLabels: e.target.checked,
+                  }))
+                }
+                className="rounded accent-cyan-600"
+              />
+            </label>
+
+            <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
+              <span>성도 속 하단 등급 스케일 범례 (Magnitude Legend) 표시</span>
+              <input
+                type="checkbox"
+                checked={config.showMagnitudeScale}
+                onChange={(e) =>
+                  onChangeConfig((p) => ({
+                    ...p,
+                    showMagnitudeScale: e.target.checked,
+                  }))
+                }
+                className="rounded accent-cyan-600"
+              />
+            </label>
+
+            <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
+              <span>성도 속 하단 각거리 축척 막대 (Angular Scale Bar) 표시</span>
+              <input
+                type="checkbox"
+                checked={config.showScaleBar}
+                onChange={(e) =>
+                  onChangeConfig((p) => ({
+                    ...p,
+                    showScaleBar: e.target.checked,
+                  }))
+                }
+                className="rounded accent-cyan-600"
+              />
+            </label>
+
+            <label className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer py-0.5">
+              <span>성도 오른쪽 위 커서 위치 좌표 (Cursor Coordinates) 표시</span>
+              <input
+                type="checkbox"
+                checked={config.showCursorCoords}
+                onChange={(e) =>
+                  onChangeConfig((p) => ({
+                    ...p,
+                    showCursorCoords: e.target.checked,
+                  }))
+                }
+                className="rounded accent-cyan-600"
+              />
+            </label>
           </div>
-          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mt-1">
-            은하수 다중 등고선 (Galactic Isophotes)
-          </h3>
-          <p className="text-xs text-slate-600 dark:text-slate-400 mt-2 leading-relaxed">
-            은하좌표계(Galactic Longitude l, Latitude b)에서 정의된 3단계 광도 등고선(Level 1 외곽 헤일로, Level 2 은하 중심 띠, Level 3 궁수·백조·방패·용골자리 고밀도 성운군)을 J2000 적도좌표 및 지평좌표로 실시간 변환하여 출력합니다.
-          </p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
-          <div className="text-xs font-mono text-cyan-600 dark:text-cyan-400">
-            02. EQUATORIAL & HORIZONTAL COORDINATES
-          </div>
-          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mt-1">
-            적도좌표계(RA/Dec) ↔ 지평좌표계(Az/Alt) 실시간 구면 변환
-          </h3>
-          <p className="text-xs text-slate-600 dark:text-slate-400 mt-2 leading-relaxed">
-            관측지 위도·경도와 관측 시각으로부터 지방항성시(LST)를 계산하여 모든 항성·별자리·메시에/콜드웰 천체를 방위각(Azimuth)과 고도(Altitude)로 변환하며, 지평선(Alt=0°)과 지상 마스크를 함께 렌더링합니다.
-          </p>
-        </div>
-
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
-          <div className="text-xs font-mono text-cyan-600 dark:text-cyan-400">
-            03. MESSIER & CALDWELL VECTOR CONTOURS
-          </div>
-          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 mt-1">
-            메시에 110선 · 콜드웰 109선 및 88개 별자리 전체 수록
-          </h3>
-          <p className="text-xs text-slate-600 dark:text-slate-400 mt-2 leading-relaxed">
-            메시에(M1~M110)와 콜드웰(C1~C109) 전 목록 및 IAU 88개 별자리의 구면 세분화 보조선, 중심 십자선, 1.0° 초고배율 시야를 SVG 및 다중 페이지 PDF에 동일하게 렌더링합니다.
-          </p>
+        {/* Right 6 Columns: Coordinate System, Horizon Ground, Date/Time & Observer Location Card + Finder Reticle & Optics */}
+        <div className="lg:col-span-6 space-y-5">
+          {renderCoordinateAndLocationCard()}
+          {renderFinderReticleAndOpticsCard()}
         </div>
       </div>
     </div>

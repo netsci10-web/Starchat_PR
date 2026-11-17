@@ -22,6 +22,7 @@ import {
   bvToStarColor,
   formatDecDeg,
   formatRaHours,
+  generateAtlasSheets,
 } from '../utils/atlasGenerator';
 
 interface AtlasPartitionPanelProps {
@@ -29,7 +30,7 @@ interface AtlasPartitionPanelProps {
   onChangeOptions: (updater: (prev: AtlasGeneratorOptions) => AtlasGeneratorOptions) => void;
   sheets: AtlasSheet[];
   activeSheet: AtlasSheet | null;
-  onSelectSheet: (sheet: AtlasSheet) => void;
+  onSelectSheet: (sheet: AtlasSheet, jumpToChart?: boolean) => void;
   onGeneratePdf: () => void;
   pdfProgress: { current: number; total: number; stage: string } | null;
 }
@@ -44,7 +45,31 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
   pdfProgress,
 }) => {
   const [hoveredSheetNumber, setHoveredSheetNumber] = useState<number | null>(null);
+  const [boxOpacityPercent, setBoxOpacityPercent] = useState<number>(30);
   const isCustomPreset = options.presetId === 'custom_grid';
+
+  // Dynamic sheet count calculation for each preset to guarantee 100% match with top description
+  const presetSheetCounts = useMemo(() => {
+    const counts: Record<AtlasPresetId, number> = {} as any;
+    for (const pid of Object.keys(ATLAS_PRESETS) as AtlasPresetId[]) {
+      const p = ATLAS_PRESETS[pid];
+      if (pid === options.presetId) {
+        counts[pid] = sheets.length;
+      } else {
+        counts[pid] = generateAtlasSheets({
+          ...options,
+          presetId: pid,
+          decMinDeg: p.decMinDeg,
+          decMaxDeg: p.decMaxDeg,
+          fovPerSheetDeg: p.fovPerSheetDeg,
+          overlapPercent: p.overlapPercent,
+          limitStarMag: p.limitStarMag,
+          limitDsoMag: p.limitDsoMag,
+        }).length;
+      }
+    }
+    return counts;
+  }, [options, sheets.length]);
 
   const handleSelectPreset = (presetId: AtlasPresetId) => {
     const p = ATLAS_PRESETS[presetId];
@@ -130,9 +155,14 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
 
   const hoveredOrActiveSheet = useMemo(() => {
     if (hoveredSheetNumber !== null) {
-      return sheets.find((s) => s.sheetNumber === hoveredSheetNumber) || activeSheet;
+      return (
+        sheets.find((s) => s.sheetNumber === hoveredSheetNumber) ||
+        activeSheet ||
+        sheets[0] ||
+        null
+      );
     }
-    return activeSheet;
+    return activeSheet || sheets[0] || null;
   }, [hoveredSheetNumber, sheets, activeSheet]);
 
   return (
@@ -243,41 +273,44 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
         </div>
       </div>
 
-      {/* Two-Column Split: Left Preset & Custom Parameters | Right All-Sky Star Chart Index Map + Partitioned Sheets List Directly Below */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column (5 cols): Presets & Partition Parameters (Locked unless 'custom_grid' is selected) */}
-        <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 flex flex-col justify-between space-y-5">
+      {/* Two-Column Split: Left Preset & Custom Parameters (50% compact size) | Right All-Sky Star Chart Index Map + Partitioned Sheets List */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        {/* Left Column (3-4 cols): Presets & Partition Parameters (50% Compact Size, Locked unless 'custom_grid' is selected) */}
+        <div className="lg:col-span-4 xl:col-span-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5 flex flex-col justify-between space-y-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+            <h3 className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
               <span>성도집 분할 프리셋 및 세부 파라미터</span>
             </h3>
 
-            {/* Preset Selector Buttons */}
-            <div className="mt-3 space-y-2">
+            {/* Preset Selector Buttons (Compact 50% Size) */}
+            <div className="mt-2 space-y-1">
               {(Object.keys(ATLAS_PRESETS) as AtlasPresetId[]).map((pid) => {
                 const p = ATLAS_PRESETS[pid];
                 const isSelected = options.presetId === pid;
+                const count = isSelected ? sheets.length : (presetSheetCounts[pid] || 0);
+                const baseName = p.nameKo.replace(/\s*\(\d+매\)/, '');
+                const displayName = `${baseName} (${count}매)`;
                 return (
                   <button
                     key={pid}
                     type="button"
                     onClick={() => handleSelectPreset(pid)}
-                    className={`w-full text-left p-3 rounded-lg border transition-colors cursor-pointer ${
+                    className={`w-full text-left py-1.5 px-2.5 rounded-md border transition-colors cursor-pointer ${
                       isSelected
                         ? 'border-cyan-500 bg-cyan-50/50 dark:bg-cyan-950/30'
                         : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                        {p.nameKo}
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-[11px] font-semibold text-slate-900 dark:text-slate-100">
+                        {displayName}
                       </span>
                       {isSelected && (
-                        <Check className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400 shrink-0" />
+                        <Check className="w-3 h-3 text-cyan-600 dark:text-cyan-400 shrink-0" />
                       )}
                     </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    <div className="text-[9.5px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
                       {p.subtitleKo}
                     </div>
                   </button>
@@ -285,40 +318,40 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
               })}
             </div>
 
-            {/* Fine-Grained Partition Parameters Header + Lock Notice */}
-            <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-800">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+            {/* Fine-Grained Partition Parameters Header + Lock Notice (Compact 50% Size) */}
+            <div className="mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1">
                   {isCustomPreset ? (
-                    <Unlock className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                    <Unlock className="w-3 h-3 text-cyan-600 dark:text-cyan-400" />
                   ) : (
-                    <Lock className="w-3.5 h-3.5 text-amber-500" />
+                    <Lock className="w-3 h-3 text-amber-500" />
                   )}
                   <span>세부 파라미터 설정</span>
                 </span>
                 <span
-                  className={`text-[11px] font-mono px-2 py-0.5 rounded ${
+                  className={`text-[9.5px] font-mono px-1.5 py-0.5 rounded ${
                     isCustomPreset
                       ? 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-600 dark:text-cyan-400 border border-cyan-500/40'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
                   }`}
                 >
                   {isCustomPreset
-                    ? '사용자 정의 편집 가능'
-                    : '사용자 정의 분할 성도집 외 변경 불가'}
+                    ? '편집 가능'
+                    : '사용자 정의 외 변경 불가'}
                 </span>
               </div>
 
               {/* Disabled unless 'custom_grid' (사용자 정의 분할 성도집) is selected */}
               <fieldset
                 disabled={!isCustomPreset}
-                className={`space-y-3.5 transition-opacity ${
+                className={`space-y-2 transition-opacity ${
                   !isCustomPreset ? 'opacity-45 pointer-events-none select-none' : ''
                 }`}
               >
                 <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-600 dark:text-slate-400">페이지당 화각 (Chart FOV)</span>
+                  <div className="flex justify-between text-[10.5px] mb-0.5">
+                    <span className="text-slate-600 dark:text-slate-400">페이지당 화각 (FOV)</span>
                     <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
                       {options.fovPerSheetDeg}°
                     </span>
@@ -337,17 +370,17 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                         fovPerSheetDeg: Number(e.target.value),
                       }));
                     }}
-                    className="w-full accent-cyan-600 disabled:cursor-not-allowed"
+                    className="w-full h-1.5 accent-cyan-600 disabled:cursor-not-allowed"
                   />
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-xs mb-1">
+                  <div className="flex justify-between text-[10.5px] mb-0.5">
                     <span className="text-slate-600 dark:text-slate-400">
-                      항성 한계등급 (Limiting Star Mag · 최대 14.0)
+                      항성 한계등급 (최대 14.0)
                     </span>
                     <span className="font-mono font-semibold text-cyan-600 dark:text-cyan-400">
-                      {options.limitStarMag.toFixed(1)} mag
+                      {options.limitStarMag.toFixed(1)}m
                     </span>
                   </div>
                   <input
@@ -364,17 +397,17 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                         limitStarMag: Number(e.target.value),
                       }));
                     }}
-                    className="w-full accent-cyan-600 disabled:cursor-not-allowed"
+                    className="w-full h-1.5 accent-cyan-600 disabled:cursor-not-allowed"
                   />
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-xs mb-1">
+                  <div className="flex justify-between text-[10.5px] mb-0.5">
                     <span className="text-slate-600 dark:text-slate-400">
-                      성운·은하 한계등급 (Limiting DSO Mag · 최대 14.0)
+                      성운·은하 한계등급 (최대 14.0)
                     </span>
                     <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
-                      {options.limitDsoMag.toFixed(1)} mag
+                      {options.limitDsoMag.toFixed(1)}m
                     </span>
                   </div>
                   <input
@@ -391,13 +424,13 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                         limitDsoMag: Number(e.target.value),
                       }));
                     }}
-                    className="w-full accent-cyan-600 disabled:cursor-not-allowed"
+                    className="w-full h-1.5 accent-cyan-600 disabled:cursor-not-allowed"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    <label className="block text-[10px] text-slate-500 dark:text-slate-400 mb-0.5">
                       최소 적위 (Dec Min)
                     </label>
                     <select
@@ -410,19 +443,19 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                           decMinDeg: Number(e.target.value),
                         }));
                       }}
-                      className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 disabled:cursor-not-allowed"
+                      className="w-full px-2 py-1 text-[11px] font-mono rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 disabled:cursor-not-allowed"
                     >
-                      <option value={-90}>-90° (남천극 포함)</option>
+                      <option value={-90}>-90° (남천극)</option>
                       <option value={-45}>-45° (남천 중위도)</option>
-                      <option value={-35}>-35° (한반도 남쪽 한계)</option>
+                      <option value={-35}>-35° (한반도 남쪽)</option>
                       <option value={-20}>-20° (적도 남부)</option>
-                      <option value={0}>0° (북반구 전용)</option>
+                      <option value={0}>0° (북반구)</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                      인쇄 배색 테마 (PDF Theme)
+                    <label className="block text-[10px] text-slate-500 dark:text-slate-400 mb-0.5">
+                      인쇄 배색 테마
                     </label>
                     <select
                       disabled={!isCustomPreset}
@@ -434,17 +467,17 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                           colorScheme: e.target.value as AtlasGeneratorOptions['colorScheme'],
                         }));
                       }}
-                      className="w-full px-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 disabled:cursor-not-allowed"
+                      className="w-full px-2 py-1 text-[11px] rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 disabled:cursor-not-allowed"
                     >
-                      <option value="paper">백색 출판 성도 (Paper Print)</option>
-                      <option value="observatory">다크 천문대 (Observatory Dark)</option>
-                      <option value="nightvision">야간 적색광 (Night Vision Red)</option>
+                      <option value="paper">백색 출판</option>
+                      <option value="observatory">다크 관측</option>
+                      <option value="nightvision">야간 적색</option>
                     </select>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                <div className="grid grid-cols-2 gap-2 pt-0.5">
+                  <label className="flex items-center gap-1.5 text-[10.5px] text-slate-700 dark:text-slate-300 cursor-pointer">
                     <input
                       type="checkbox"
                       disabled={!isCustomPreset}
@@ -458,9 +491,9 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                       }}
                       className="rounded accent-cyan-600"
                     />
-                    <span>표지 및 제원표 포함</span>
+                    <span>표지·제원표</span>
                   </label>
-                  <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-[10.5px] text-slate-700 dark:text-slate-300 cursor-pointer">
                     <input
                       type="checkbox"
                       disabled={!isCustomPreset}
@@ -474,7 +507,7 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                       }}
                       className="rounded accent-cyan-600"
                     />
-                    <span>전천 분할 색인도 포함</span>
+                    <span>전천 색인도</span>
                   </label>
                 </div>
               </fieldset>
@@ -482,8 +515,8 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
           </div>
         </div>
 
-        {/* Right Column (7 cols): All-Sky Star Chart with Partition Cells Overlay + Partitioned Sheets Directory Directly Below */}
-        <div className="lg:col-span-7 space-y-5">
+        {/* Right Column (8-9 cols): All-Sky Star Chart with Partition Cells Overlay + Partitioned Sheets Directory Directly Below */}
+        <div className="lg:col-span-8 xl:col-span-9 space-y-5">
           {/* Card 1: Interactive All-Sky Star Chart with Partition Cells Overlay */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 flex flex-col justify-between">
             <div>
@@ -497,8 +530,18 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                   </p>
                 </div>
                 {hoveredOrActiveSheet && (
-                  <div className="text-xs font-mono px-2.5 py-1 rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300 border border-cyan-500/40 shrink-0">
-                    Chart #{String(hoveredOrActiveSheet.sheetNumber).padStart(2, '0')} · {hoveredOrActiveSheet.titleKo} ({formatRaHours(hoveredOrActiveSheet.centerRaHours, true)} / {formatDecDeg(hoveredOrActiveSheet.centerDecDeg, true)})
+                  <div className="text-xs font-mono px-2.5 py-1 rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300 border border-cyan-500/40 shrink-0 flex items-center gap-2">
+                    <span>
+                      Chart #{String(hoveredOrActiveSheet.sheetNumber).padStart(2, '0')} · {hoveredOrActiveSheet.titleKo} ({formatRaHours(hoveredOrActiveSheet.centerRaHours, true)} / {formatDecDeg(hoveredOrActiveSheet.centerDecDeg, true)})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectSheet(hoveredOrActiveSheet, true)}
+                      className="px-2 py-0.5 rounded text-[10.5px] font-sans font-semibold bg-cyan-600 hover:bg-cyan-500 text-white cursor-pointer transition-colors whitespace-nowrap ml-1"
+                      title="대화형 성도 뷰어에서 보기"
+                    >
+                      성도 열기 →
+                    </button>
                   </div>
                 )}
               </div>
@@ -506,6 +549,7 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
               {/* SVG All-Sky Star Chart + Partition Grid Overlay */}
               <div className="w-full overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-[#050914]">
                 <svg
+                  data-chart-svg="true"
                   viewBox="0 0 720 360"
                   className="w-full h-auto block select-none"
                 >
@@ -570,8 +614,8 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                                 y1={y1}
                                 x2={x2}
                                 y2={y2}
-                                stroke="rgba(56, 189, 248, 0.55)"
-                                strokeWidth="0.9"
+                                stroke="rgba(56, 189, 248, 0.70)"
+                                strokeWidth="0.85"
                               />
                             );
                           })}
@@ -580,8 +624,9 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                               x={cx}
                               y={cy - 3}
                               textAnchor="middle"
-                              fill="rgba(148, 163, 184, 0.78)"
-                              fontSize="6.5"
+                              fill="rgba(226, 232, 240, 0.90)"
+                              fontSize="6.8"
+                              fontWeight="600"
                               fontFamily="JetBrains Mono, monospace"
                             >
                               {con.constellation.toUpperCase()}
@@ -600,27 +645,48 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                           key={`idx-dso-${dso.id}`}
                           cx={x}
                           cy={y}
-                          r="1.3"
+                          r="1.6"
                           fill="#10B981"
-                          opacity="0.75"
+                          stroke="#064E3B"
+                          strokeWidth="0.4"
+                          opacity="0.9"
                         />
                       );
                     })}
 
-                    {/* Bright Stars on All-Sky Chart */}
-                    {BRIGHT_STARS.filter((st) => st.mag <= 4.5).map((st) => {
+                    {/* Bright Stars on All-Sky Chart (up to mag 5.2 for rich stellar identification) */}
+                    {BRIGHT_STARS.filter((st) => st.mag <= 5.2).map((st) => {
                       const x = raDegToX(st.raDeg);
                       const y = decDegToY(st.decDeg);
-                      const r = Math.max(0.75, 2.9 - st.mag * 0.42);
+                      const r = Math.max(0.75, 3.0 - st.mag * 0.44);
                       const color = bvToStarColor(st.bv, 'observatory');
+                      const isVeryBright = st.mag <= 1.8;
                       return (
-                        <circle
-                          key={`idx-star-${st.id}`}
-                          cx={x}
-                          cy={y}
-                          r={r}
-                          fill={color}
-                        />
+                        <g key={`idx-star-${st.id}`}>
+                          {isVeryBright && (
+                            <circle
+                              cx={x}
+                              cy={y}
+                              r={r * 1.8}
+                              fill={color}
+                              opacity="0.22"
+                            />
+                          )}
+                          <circle
+                            cx={x}
+                            cy={y}
+                            r={r}
+                            fill={color}
+                          />
+                          {isVeryBright && (
+                            <circle
+                              cx={x}
+                              cy={y}
+                              r={Math.max(0.6, r * 0.4)}
+                              fill="#FFFFFF"
+                            />
+                          )}
+                        </g>
                       );
                     })}
                   </g>
@@ -699,15 +765,19 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                     const isCurrent = activeSheet?.sheetNumber === sh.sheetNumber;
                     const isHovered = hoveredSheetNumber === sh.sheetNumber;
 
+                    const boxStrokeOpacity = boxOpacityPercent / 100;
+                    const boxFillOpacity = (boxOpacityPercent / 100) * 0.25;
+                    const boxTextOpacity = Math.max(0.2, (boxOpacityPercent / 100) * 0.85);
+
                     return (
                       <g
                         key={`tile-${sh.sheetNumber}`}
-                        onClick={() => onSelectSheet(sh)}
+                        onClick={() => onSelectSheet(sh, false)}
                         onMouseEnter={() => setHoveredSheetNumber(sh.sheetNumber)}
                         onMouseLeave={() => setHoveredSheetNumber(null)}
                         className="cursor-pointer"
                       >
-                        {/* Outer Partition Cell Box */}
+                        {/* Outer Partition Cell Box (controlled by boxOpacityPercent slider) */}
                         <rect
                           x={x0 + 0.8}
                           y={y0 + 0.8}
@@ -716,49 +786,59 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                           rx="2"
                           fill={
                             isCurrent
-                              ? 'rgba(6, 182, 212, 0.28)'
+                              ? 'rgba(6, 182, 212, 0.22)'
                               : isHovered
-                              ? 'rgba(56, 189, 248, 0.20)'
-                              : 'rgba(15, 23, 42, 0.14)'
+                              ? 'rgba(56, 189, 248, 0.16)'
+                              : `rgba(6, 182, 212, ${boxFillOpacity})`
                           }
                           stroke={
                             isCurrent
                               ? '#22D3EE'
                               : isHovered
-                              ? '#FBBF24'
-                              : 'rgba(56, 189, 248, 0.85)'
+                              ? '#38BDF8'
+                              : `rgba(56, 189, 248, ${boxStrokeOpacity})`
                           }
-                          strokeWidth={isCurrent || isHovered ? '2.0' : '1.15'}
+                          strokeWidth={isCurrent || isHovered ? '1.8' : '0.8'}
                         />
 
-                        {/* Sheet Number Pill Badge Inside Cell */}
-                        <rect
-                          x={x0 + wClamped / 2 - 14}
-                          y={y0 + hClamped / 2 - 7}
-                          width="28"
-                          height="14"
-                          rx="3"
-                          fill={
-                            isCurrent
-                              ? '#0891B2'
-                              : isHovered
-                              ? '#D97706'
-                              : 'rgba(2, 6, 23, 0.82)'
-                          }
-                          stroke={isCurrent ? '#67E8F9' : isHovered ? '#FDE68A' : '#38BDF8'}
-                          strokeWidth="0.9"
-                        />
-                        <text
-                          x={x0 + wClamped / 2}
-                          y={y0 + hClamped / 2 + 3.2}
-                          textAnchor="middle"
-                          fill="#FFFFFF"
-                          fontSize="9"
-                          fontWeight="700"
-                          fontFamily="JetBrains Mono, monospace"
-                        >
-                          #{String(sh.sheetNumber).padStart(2, '0')}
-                        </text>
+                        {/* Sheet Number: subtle text controlled by opacity slider; clear badge on hover/current */}
+                        {isCurrent || isHovered ? (
+                          <g>
+                            <rect
+                              x={x0 + wClamped / 2 - 14}
+                              y={y0 + hClamped / 2 - 7}
+                              width="28"
+                              height="14"
+                              rx="3"
+                              fill={isCurrent ? '#0891B2' : '#0284C7'}
+                              stroke={isCurrent ? '#67E8F9' : '#BAE6FD'}
+                              strokeWidth="0.9"
+                            />
+                            <text
+                              x={x0 + wClamped / 2}
+                              y={y0 + hClamped / 2 + 3.2}
+                              textAnchor="middle"
+                              fill="#FFFFFF"
+                              fontSize="8.5"
+                              fontWeight="700"
+                              fontFamily="JetBrains Mono, monospace"
+                            >
+                              #{String(sh.sheetNumber).padStart(2, '0')}
+                            </text>
+                          </g>
+                        ) : (
+                          <text
+                            x={x0 + wClamped / 2}
+                            y={y0 + hClamped / 2 + 3.0}
+                            textAnchor="middle"
+                            fill={`rgba(148, 163, 184, ${boxTextOpacity})`}
+                            fontSize="8"
+                            fontWeight="500"
+                            fontFamily="JetBrains Mono, monospace"
+                          >
+                            #{String(sh.sheetNumber).padStart(2, '0')}
+                          </text>
+                        )}
                       </g>
                     );
                   })}
@@ -777,11 +857,15 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
               </div>
             </div>
 
-            {/* Legend Strip under Index Map */}
-            <div className="mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+            {/* Legend Strip under Index Map with Center Box Opacity Slider */}
+            <div className="mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+              {/* Left Legend Indicators */}
               <div className="flex flex-wrap items-center gap-3">
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-2 rounded-xs border border-sky-400 bg-sky-400/20 inline-block" />
+                  <span
+                    className="w-3 h-2 rounded-xs border border-sky-400 inline-block transition-opacity"
+                    style={{ opacity: Math.max(0.3, boxOpacityPercent / 100) }}
+                  />
                   <span>분할 성도 분리칸 (#01~#{sheets.length})</span>
                 </span>
                 <span className="inline-flex items-center gap-1.5">
@@ -793,6 +877,28 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                   <span>메시에 천체</span>
                 </span>
               </div>
+
+              {/* Center Slider: Box Opacity Control (두 번째 그림 가운데에 위치하는 박스 투명도 설정 슬라이드바) */}
+              <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-slate-100/90 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/70">
+                <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                  분할 박스 투명도
+                </span>
+                <input
+                  type="range"
+                  min={5}
+                  max={100}
+                  step={5}
+                  value={boxOpacityPercent}
+                  onChange={(e) => setBoxOpacityPercent(Number(e.target.value))}
+                  className="w-24 sm:w-32 h-1.5 accent-cyan-600 cursor-pointer"
+                  title="분할 성도 박스 투명도 설정 (5% ~ 100%)"
+                />
+                <span className="font-mono text-[11px] font-semibold text-cyan-600 dark:text-cyan-400 w-9 text-right tabular-nums">
+                  {boxOpacityPercent}%
+                </span>
+              </div>
+
+              {/* Right Coordinate Tag */}
               <span className="font-mono">ALL-SKY J2000.0 TESSELLATION</span>
             </div>
           </div>
@@ -827,7 +933,7 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                     return (
                       <tr
                         key={sh.sheetNumber}
-                        onClick={() => onSelectSheet(sh)}
+                        onClick={() => onSelectSheet(sh, false)}
                         onMouseEnter={() => setHoveredSheetNumber(sh.sheetNumber)}
                         onMouseLeave={() => setHoveredSheetNumber(null)}
                         className={`cursor-pointer transition-colors ${
@@ -864,7 +970,7 @@ export const AtlasPartitionPanel: React.FC<AtlasPartitionPanelProps> = ({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              onSelectSheet(sh);
+                              onSelectSheet(sh, true);
                             }}
                             className="px-2.5 py-1 rounded text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-cyan-600 hover:text-white text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap cursor-pointer"
                           >
